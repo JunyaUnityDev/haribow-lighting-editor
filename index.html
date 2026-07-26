@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HARIBOW 照明キューエディタ</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --line:#2a2f3a;
+    --text:#e8eaed; --sub:#9aa2b1; --accent:#6ea8ff; --accent2:#ffb26e;
+    --danger:#ff6e6e; --ok:#6effa0;
+    font-size:15px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Hiragino Kaku Gothic ProN",sans-serif;}
+  header{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  header h1{font-size:15px;font-weight:600;margin:0;color:var(--sub);letter-spacing:.02em;white-space:nowrap;}
+  select,input[type=text],input[type=number]{
+    background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:6px 8px;font-size:13px;
+  }
+  button{
+    background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:6px;padding:6px 12px;font-size:13px;cursor:pointer;
+  }
+  button:hover{border-color:var(--accent);}
+  button.primary{background:var(--accent);color:#0f1115;border-color:var(--accent);font-weight:600;}
+  button.danger{color:var(--danger);}
+  .spacer{flex:1;}
+  #status{font-size:12px;color:var(--sub);white-space:nowrap;}
+  #status.err{color:var(--danger);}
+  #status.ok{color:var(--ok);}
+
+  main{padding:16px;max-width:1400px;margin:0 auto;}
+  .row{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;}
+
+  #waveWrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:16px;}
+  #waveToolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+  #waveToolbar .time{font-variant-numeric:tabular-nums;color:var(--sub);font-size:13px;}
+  #timelineOuter{position:relative;overflow-x:auto;border-radius:6px;}
+  canvas#wave{display:block;background:#0b0d12;border-radius:6px;cursor:crosshair;}
+  #cueLayer{position:absolute;top:0;left:0;height:100%;pointer-events:none;}
+  .cueMarker{
+    position:absolute;top:0;width:2px;height:100%;background:var(--accent2);
+    pointer-events:auto;cursor:ew-resize;
+  }
+  .cueMarker::before{
+    content:'';position:absolute;top:-1px;left:-5px;width:12px;height:12px;
+    background:var(--accent2);border-radius:2px;
+  }
+  .cueMarker.selected{background:var(--ok);}
+  .cueMarker.selected::before{background:var(--ok);}
+  .cueMarker .label{
+    position:absolute;top:-20px;left:-4px;font-size:10px;color:var(--sub);
+    white-space:nowrap;pointer-events:none;
+  }
+
+  #hint{font-size:12px;color:var(--sub);margin-top:6px;}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;}
+  #detailPanel{width:320px;flex:none;}
+  #detailPanel h3{margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600;}
+  .field{margin-bottom:10px;}
+  .field label{display:block;font-size:11px;color:var(--sub);margin-bottom:3px;}
+  .field input,.field textarea{width:100%;}
+  .field textarea{background:var(--panel2);border:1px solid var(--line);color:var(--text);border-radius:6px;padding:6px 8px;font-size:13px;resize:vertical;min-height:50px;font-family:inherit;}
+  .fieldRow{display:flex;gap:8px;}
+  .fieldRow .field{flex:1;}
+  #noSelection{color:var(--sub);font-size:13px;padding:20px 0;text-align:center;}
+
+  #tableWrap{flex:1;min-width:480px;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;}
+  th{text-align:left;color:var(--sub);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line);white-space:nowrap;}
+  td{padding:5px 8px;border-bottom:1px solid #1c202a;}
+  tr.cueRow{cursor:pointer;}
+  tr.cueRow:hover{background:var(--panel2);}
+  tr.cueRow.selected{background:#22304a;}
+  tr.cueRow td.num{font-variant-numeric:tabular-nums;color:var(--sub);}
+  tr.cueRow.measured td.time{color:var(--ok);}
+  .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;margin-right:3px;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HARIBOW 照明キューエディタ</h1>
+  <select id="showSelect"><option value="">演目を選択…</option></select>
+  <button id="newShowBtn">＋新規演目</button>
+  <div class="spacer"></div>
+  <input type="text" id="editorName" placeholder="あなたの名前" style="width:120px;">
+  <span id="status"></span>
+</header>
+
+<main>
+  <div id="waveWrap" style="display:none;">
+    <div id="waveToolbar">
+      <input type="file" id="audioFile" accept="audio/*">
+      <button id="playBtn">▶ 再生</button>
+      <span class="time" id="timeLabel">0:00.00 / 0:00.00</span>
+      <div class="spacer"></div>
+      <button id="reloadBtn">再読込</button>
+      <button id="saveBtn" class="primary">保存</button>
+    </div>
+    <div id="timelineOuter">
+      <canvas id="wave" height="140"></canvas>
+      <div id="cueLayer"></div>
+    </div>
+    <div id="hint">タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。</div>
+  </div>
+
+  <div class="row" id="editArea" style="display:none;">
+    <div id="tableWrap" class="panel">
+      <h3 style="margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600;">キュー一覧（<span id="cueCount">0</span>件）</h3>
+      <div style="max-height:520px;overflow-y:auto;">
+        <table>
+          <thead><tr>
+            <th>No</th><th>時刻</th><th>終了</th><th>パート</th><th>灯体</th><th>色</th><th>強度</th><th></th>
+          </tr></thead>
+          <tbody id="cueTableBody"></tbody>
+        </table>
+      </div>
+      <button id="addCueBtn" style="margin-top:10px;">＋キューを追加（現在の再生位置）</button>
+    </div>
+
+    <div id="detailPanel" class="panel">
+      <h3>キュー詳細</h3>
+      <div id="noSelection">キューを選択してください</div>
+      <div id="detailForm" style="display:none;">
+        <div class="fieldRow">
+          <div class="field"><label>時刻（秒）</label><input type="text" id="f_time"></div>
+          <div class="field"><label>区間終了（秒・任意）</label><input type="text" id="f_timeEnd"></div>
+        </div>
+        <div class="field"><label>パート名</label><input type="text" id="f_part"></div>
+        <div class="field"><label>灯体（カンマ区切り）</label><input type="text" id="f_fixtures" placeholder="TOP, SIDE-F"></div>
+        <div class="fieldRow">
+          <div class="field"><label>色</label><input type="text" id="f_color"></div>
+          <div class="field"><label>強度</label><input type="text" id="f_intensity"></div>
+        </div>
+        <div class="field"><label>メモ</label><textarea id="f_memo"></textarea></div>
+        <div class="field"><label><input type="checkbox" id="f_measured" style="width:auto;"> JUNYA実測</label></div>
+        <button id="deleteCueBtn" class="danger">このキューを削除</button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const API = 'https://script.google.com/macros/s/AKfycbyBhP557ISUfV4-laUz94wjo5OYXz_wds7O3J0CAsePjzgYhkzWHSYVsZ2Oaas36iJF1A/exec';
+
+let state = {
+  show: null, cues: [], selectedIdx: -1, baseVersion: '',
+  audioBuffer: null, duration: 0, isPlaying: false, playStart: 0, playOffset: 0,
+  pxPerSec: 40
+};
+
+const $ = (id) => document.getElementById(id);
+
+function setStatus(msg, cls){
+  const el = $('status'); el.textContent = msg; el.className = cls || '';
+  if (cls === 'ok') setTimeout(() => { if (el.textContent === msg) el.textContent=''; }, 3000);
+}
+
+function fmtTime(s){
+  s = Number(s)||0;
+  const m = Math.floor(s/60), r = s - m*60;
+  return m + ':' + r.toFixed(2).padStart(5,'0');
+}
+
+async function api(action, params, method, body){
+  if (method === 'POST'){
+    const res = await fetch(API, { method:'POST', body: JSON.stringify(Object.assign({action}, body)) });
+    return res.json();
+  }
+  const qs = new URLSearchParams(Object.assign({action}, params||{})).toString();
+  const res = await fetch(API + '?' + qs);
+  return res.json();
+}
+
+// ---------- 演目一覧 ----------
+async function loadShows(){
+  setStatus('読込中…');
+  const r = await api('listShows');
+  if (!r.ok){ setStatus('演目一覧の取得に失敗: '+r.error, 'err'); return; }
+  const sel = $('showSelect');
+  sel.innerHTML = '<option value="">演目を選択…</option>';
+  r.shows.forEach(s => {
+    const opt = document.createElement('option');
+    opt.value = s.name; opt.textContent = s.name + (s.lastEditor ? '（最終更新: '+s.lastEditor+'）' : '');
+    sel.appendChild(opt);
+  });
+  setStatus('');
+}
+
+$('showSelect').addEventListener('change', (e) => {
+  if (e.target.value) selectShow(e.target.value);
+});
+
+$('newShowBtn').addEventListener('click', async () => {
+  const name = prompt('新しい演目名を入力してください（例: Original, YOUNG BLOOD）');
+  if (!name) return;
+  const r = await api(null, null, 'POST', { action:'createShow', show:name, editor: $('editorName').value||'' });
+  if (!r.ok){ alert('作成失敗: ' + r.error); return; }
+  await loadShows();
+  $('showSelect').value = name;
+  selectShow(name);
+});
+
+async function selectShow(name){
+  setStatus('読込中…');
+  const r = await api('getCues', { show: name });
+  if (!r.ok){ setStatus('取得失敗: '+r.error, 'err'); return; }
+  state.show = name;
+  state.cues = r.cues.map((c,i)=>Object.assign({}, c, {_id:i}));
+  state.baseVersion = r.meta ? r.meta.lastUpdated : '';
+  state.selectedIdx = -1;
+  $('waveWrap').style.display = '';
+  $('editArea').style.display = '';
+  renderTable();
+  renderMarkers();
+  showDetail(-1);
+  setStatus('読込完了（'+state.cues.length+'件）', 'ok');
+}
+
+// ---------- 保存 ----------
+$('saveBtn').addEventListener('click', async () => {
+  if (!state.show) return;
+  const editor = $('editorName').value.trim();
+  if (!editor){ alert('あなたの名前を入力してください（右上）'); return; }
+  setStatus('保存中…');
+  const cues = state.cues.map(c => ({ time:Number(c.time)||0, timeEnd: c.timeEnd===''||c.timeEnd==null?null:Number(c.timeEnd),
+    part:c.part||'', fixtures:c.fixtures||'', color:c.color||'', intensity:c.intensity||'', memo:c.memo||'', measured:!!c.measured }));
+  const r = await api(null, null, 'POST', { action:'saveCues', show: state.show, cues, editor, baseVersion: state.baseVersion });
+  if (!r.ok){
+    if (r.error === 'conflict'){
+      alert((r.currentEditor||'別の誰か')+'さんが既に保存しているため、このまま保存すると上書きになります。再読込してから編集し直してください。');
+    } else {
+      alert('保存失敗: ' + r.error);
+    }
+    setStatus('保存失敗', 'err');
+    return;
+  }
+  state.baseVersion = r.lastUpdated;
+  setStatus('保存しました（'+r.count+'件）', 'ok');
+  loadShows();
+});
+
+$('reloadBtn').addEventListener('click', () => { if (state.show) selectShow(state.show); });
+
+// ---------- テーブル ----------
+function renderTable(){
+  const body = $('cueTableBody');
+  body.innerHTML = '';
+  const sorted = state.cues.slice().sort((a,b)=>(Number(a.time)||0)-(Number(b.time)||0));
+  sorted.forEach((c) => {
+    const tr = document.createElement('tr');
+    tr.className = 'cueRow' + (c._id===state.selectedIdx?' selected':'') + (c.measured?' measured':'');
+    tr.innerHTML = `<td class="num">${c._id+1}</td><td class="time num">${fmtTime(c.time)}</td>
+      <td class="num">${c.timeEnd?fmtTime(c.timeEnd):''}</td><td>${escapeHtml(c.part||'')}</td>
+      <td>${escapeHtml(c.fixtures||'')}</td><td>${escapeHtml(c.color||'')}</td><td>${escapeHtml(String(c.intensity||''))}</td>
+      <td><button data-del="${c._id}" class="danger" style="padding:2px 8px;">×</button></td>`;
+    tr.addEventListener('click', (e) => { if (e.target.dataset.del===undefined || e.target.dataset.del==='') showDetail(c._id); });
+    body.appendChild(tr);
+  });
+  body.querySelectorAll('button[data-del]').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{ e.stopPropagation(); deleteCue(Number(btn.dataset.del)); });
+  });
+  $('cueCount').textContent = state.cues.length;
+}
+
+function escapeHtml(s){ return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+// ---------- 詳細パネル ----------
+function showDetail(id){
+  state.selectedIdx = id;
+  renderTable(); renderMarkers();
+  const c = state.cues.find(x=>x._id===id);
+  if (!c){ $('noSelection').style.display=''; $('detailForm').style.display='none'; return; }
+  $('noSelection').style.display='none'; $('detailForm').style.display='';
+  $('f_time').value = c.time; $('f_timeEnd').value = c.timeEnd==null?'':c.timeEnd;
+  $('f_part').value = c.part||''; $('f_fixtures').value = c.fixtures||'';
+  $('f_color').value = c.color||''; $('f_intensity').value = c.intensity||'';
+  $('f_memo').value = c.memo||''; $('f_measured').checked = !!c.measured;
+}
+
+['f_time','f_timeEnd','f_part','f_fixtures','f_color','f_intensity','f_memo'].forEach(id=>{
+  $(id).addEventListener('input', () => {
+    const c = state.cues.find(x=>x._id===state.selectedIdx);
+    if (!c) return;
+    const key = id.replace('f_','');
+    let v = $(id).value;
+    if (key==='time'||key==='timeEnd') v = v===''? (key==='timeEnd'?null:0) : Number(v);
+    c[key] = v;
+    renderTable(); renderMarkers();
+  });
+});
+$('f_measured').addEventListener('change', () => {
+  const c = state.cues.find(x=>x._id===state.selectedIdx);
+  if (c) c.measured = $('f_measured').checked;
+  renderTable();
+});
+
+$('deleteCueBtn').addEventListener('click', () => deleteCue(state.selectedIdx));
+function deleteCue(id){
+  state.cues = state.cues.filter(c=>c._id!==id);
+  if (state.selectedIdx===id) state.selectedIdx = -1;
+  renderTable(); renderMarkers(); showDetail(-1);
+}
+
+$('addCueBtn').addEventListener('click', () => addCueAt(currentPlayTime()));
+
+function nextId(){ return state.cues.length ? Math.max(...state.cues.map(c=>c._id))+1 : 0; }
+function addCueAt(t){
+  const c = { _id: nextId(), time: Math.round(t*100)/100, timeEnd:null, part:'', fixtures:'', color:'', intensity:'', memo:'', measured:false };
+  state.cues.push(c);
+  renderTable(); renderMarkers(); showDetail(c._id);
+}
+
+// ---------- 波形 ----------
+const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+$('audioFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  setStatus('音源を解析中…');
+  const buf = await file.arrayBuffer();
+  const decoded = await audioCtx.decodeAudioData(buf);
+  state.audioBuffer = decoded;
+  state.duration = decoded.duration;
+  drawWave();
+  setStatus('');
+});
+
+function drawWave(){
+  const canvas = $('wave');
+  const buf = state.audioBuffer;
+  const width = buf ? Math.max(800, Math.ceil(buf.duration * state.pxPerSec)) : 800;
+  canvas.width = width;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (buf){
+    const data = buf.getChannelData(0);
+    const step = Math.ceil(data.length / width);
+    const mid = canvas.height/2;
+    ctx.fillStyle = '#3a4256';
+    for (let x=0;x<width;x++){
+      let min=1.0, max=-1.0;
+      const start = x*step;
+      for (let i=0;i<step;i++){
+        const v = data[start+i]||0;
+        if (v<min) min=v; if (v>max) max=v;
+      }
+      ctx.fillRect(x, mid + min*mid*0.9, 1, Math.max(1,(max-min)*mid*0.9));
+    }
+  }
+  // 時間ルーラー
+  ctx.strokeStyle = '#2a2f3a'; ctx.fillStyle = '#9aa2b1'; ctx.font = '10px sans-serif';
+  const secStep = state.pxPerSec > 60 ? 1 : (state.pxPerSec > 20 ? 5 : 10);
+  for (let s=0; s*state.pxPerSec < width; s+=secStep){
+    const x = s*state.pxPerSec;
+    ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke();
+    ctx.fillText(fmtTime(s), x+2, 10);
+  }
+  $('cueLayer').style.width = width+'px';
+  $('cueLayer').style.height = canvas.height+'px';
+  renderMarkers();
+}
+
+function renderMarkers(){
+  const layer = $('cueLayer');
+  layer.innerHTML = '';
+  state.cues.forEach(c => {
+    const el = document.createElement('div');
+    el.className = 'cueMarker' + (c._id===state.selectedIdx?' selected':'');
+    el.style.left = (Number(c.time)||0)*state.pxPerSec + 'px';
+    el.innerHTML = '<div class="label">'+escapeHtml(c.part||'')+'</div>';
+    el.addEventListener('mousedown', (ev) => startDrag(ev, c._id));
+    el.addEventListener('click', (ev) => { ev.stopPropagation(); showDetail(c._id); });
+    layer.appendChild(el);
+  });
+}
+
+function startDrag(ev, id){
+  ev.preventDefault(); ev.stopPropagation();
+  const outer = $('timelineOuter');
+  function onMove(e){
+    const rect = $('wave').getBoundingClientRect();
+    const x = e.clientX - rect.left + outer.scrollLeft;
+    const t = Math.max(0, x / state.pxPerSec);
+    const c = state.cues.find(c=>c._id===id);
+    if (c){ c.time = Math.round(t*100)/100; }
+    renderMarkers();
+    if (state.selectedIdx===id){ $('f_time').value = c.time; }
+  }
+  function onUp(){
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    renderTable();
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+
+$('wave').addEventListener('click', (e) => {
+  const rect = $('wave').getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const t = x / state.pxPerSec;
+  addCueAt(t);
+});
+
+// ---------- 再生 ----------
+let sourceNode = null;
+function currentPlayTime(){
+  if (!state.isPlaying) return state.playOffset;
+  return state.playOffset + (audioCtx.currentTime - state.playStart);
+}
+$('playBtn').addEventListener('click', () => {
+  if (!state.audioBuffer) return;
+  if (state.isPlaying){
+    sourceNode.stop(); state.isPlaying=false; state.playOffset = currentPlayTime();
+    $('playBtn').textContent = '▶ 再生';
+  } else {
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = state.audioBuffer;
+    sourceNode.connect(audioCtx.destination);
+    sourceNode.start(0, state.playOffset % state.duration);
+    state.playStart = audioCtx.currentTime;
+    state.isPlaying = true;
+    $('playBtn').textContent = '⏸ 停止';
+  }
+});
+setInterval(() => {
+  if (state.audioBuffer){
+    $('timeLabel').textContent = fmtTime(currentPlayTime()) + ' / ' + fmtTime(state.duration);
+  }
+}, 100);
+
+loadShows();
+</script>
+</body>
+</html>
