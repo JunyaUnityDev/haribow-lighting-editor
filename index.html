@@ -452,9 +452,10 @@ const INTENSITY_MAP = {
   '小（顔が見える最低限）':0.16,'寒色（わずかに揺らす）':0.5
 };
 const FIXTURE_NAMES = ['SIDE-F','TOP','MH-S','MH-B','PIN','BLD','STR','LZR','HZ','BK','KEY'];
+const WARM_MAP = { '暖色':1,'寒色':0,'青':0,'青緑':0,'白':0,'水色':0,'無色':0,'無色（素）':0,'未定':0,'—':0,'':0 };
 
 function resolveToken(map, raw, fallback){
-  raw = String(raw||'').trim();
+  raw = (raw===undefined||raw===null) ? '' : String(raw).trim();
   if (raw in map) return [map[raw], map[raw]];
   // "A→B" のような遷移表記を分割
   const arrowParts = raw.split(/[→〜]/).map(s=>s.trim());
@@ -492,91 +493,330 @@ function activeSegmentAt(t){
   return { cue: cur, progress };
 }
 
-function drawPreview(){
-  const canvas = $('preview');
-  const dpr = window.devicePixelRatio||1;
-  const cssW = canvas.clientWidth||960, cssH = 180;
-  if (canvas.width !== cssW*dpr || canvas.height !== cssH*dpr){
-    canvas.width = cssW*dpr; canvas.height = cssH*dpr;
+// ---------- WebGLライトプレビュー(Taichi previzのcone/haze/floor/演者ロジックを移植) ----------
+const VERT_SRC = `#version 300 es
+void main(){
+  vec2 p = vec2((gl_VertexID==2)?3.0:-1.0, (gl_VertexID==1)?3.0:-1.0);
+  gl_Position = vec4(p,0.0,1.0);
+}`;
+
+const SCENE_FRAG = `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform vec2 uResolution;
+uniform float uTopI, uTopCos, uWingI, uPinI, uPinX, uSideI, uBeamI, uBlindI, uStrobeI, uLaserI, uBackI, uFloorI, uHaze, uWarm, uSweep, uLSweep, uLFan, uTime;
+uniform vec3 uColor;
+
+const float PZ = 5.2;
+const vec3 pinApex = vec3(0.0, 8.2, -4.0);
+const vec3 topC = vec3(0.86,0.93,1.0);
+const vec3 wingC = vec3(0.92,0.95,1.0);
+const vec3 pinC = vec3(1.0,0.97,0.90);
+const vec3 warmC = vec3(1.0,0.62,0.28);
+const vec3 floorC = vec3(0.40,0.48,0.60);
+const vec3 backC = vec3(0.55,0.72,1.0);
+const vec3 lc = vec3(0.20,0.90,0.75);
+
+float px5(int k){
+  if (k==0) return -4.2; if (k==1) return -1.3; if (k==2) return 0.0; if (k==3) return 1.3; return 4.2;
+}
+
+float cone(vec3 P, vec3 apex, vec3 d, float cosH, float L, float soft){
+  vec3 v = P - apex; float dist = length(v)+1e-6; float al = dot(v/dist, d); float r = 0.0;
+  if (al > cosH && dist < L){
+    r = pow((al-cosH)/(1.0-cosH+1e-6), soft) * exp(-dist/L*1.1);
   }
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  ctx.clearRect(0,0,cssW,cssH);
+  return r;
+}
+
+void main(){
+  float W = uResolution.x, H = uResolution.y, asp = W/H;
+  float tanf = tan(radians(33.0));
+  vec3 cam = vec3(0.0,3.0,-5.5); vec3 fwd = normalize(vec3(0.0,-0.09,1.0));
+  vec3 right = vec3(-1.0,0.0,0.0); vec3 up = vec3(0.0,1.0,0.0);
+  float u = (gl_FragCoord.x/W - 0.5) * 2.0 * tanf * asp;
+  float v = (gl_FragCoord.y/H - 0.5) * 2.0 * tanf;
+  vec3 rd = normalize(fwd + right*u + up*v);
+  vec3 hc = mix(uColor, vec3(1.0), 0.4);
+  vec3 bc = uColor;
+
+  vec3 air = vec3(0.0);
+  float dt = 22.0/44.0; float tt = 0.3;
+  vec3 pinDir = normalize(vec3(uPinX,1.7,PZ) - pinApex);
+  for (int s=0; s<44; s++){
+    vec3 P = cam + rd*tt; float hz = 0.05;
+    air += hc * uHaze * hz * dt * 0.55;
+    for (int k=0;k<5;k++){
+      vec3 apex = vec3(px5(k), 9.2, PZ);
+      air += topC * cone(P, apex, vec3(0.0,-1.0,0.0), uTopCos, 11.0, 1.4) * uTopI * hz * dt * 5.0;
+    }
+    for (int side=0; side<2; side++){
+      float sgnx = 1.0 - 2.0*float(side);
+      for (int r=0;r<2;r++){
+        vec3 apex = vec3(sgnx*7.6, 1.4+float(r)*1.6, PZ-0.4+float(r)*1.2);
+        air += wingC * cone(P, apex, vec3(-sgnx,0.0,0.0), 0.9990, 15.0, 1.1) * uWingI * hz * dt * 4.0;
+      }
+    }
+    air += pinC * cone(P, pinApex, pinDir, 0.99955, 16.0, 1.2) * uPinI * hz * dt * 6.0;
+    for (int side=0; side<2; side++){
+      float sgnx = 1.0-2.0*float(side);
+      for (int r=0;r<2;r++){
+        vec3 apex = vec3(sgnx*8.5, 2.6+float(r)*2.4, 0.3);
+        float a = uSweep + float(r)*0.4;
+        vec3 d = normalize(vec3(-sgnx*cos(a), 0.1+sin(a)*0.5, 0.05));
+        air += bc * cone(P, apex, d, 0.9994, 18.0, 1.0) * uSideI * hz * dt * 7.0;
+      }
+    }
+    for (int k=0;k<5;k++){
+      float ang = (float(k)-2.0)/2.0*0.55;
+      vec3 apex = vec3((float(k)-2.0)*2.2, 8.6, 8.2);
+      vec3 d = normalize(vec3(sin(ang)*0.5, -1.0, -0.42));
+      air += vec3(0.7,0.82,1.0) * cone(P, apex, d, 0.9985, 14.0, 1.2) * uBeamI * hz * dt * 3.0;
+    }
+    for (int k=0;k<9;k++){
+      float ang = (float(k)-4.0)/4.0*uLFan + uLSweep;
+      vec3 lap = vec3(0.0,7.9,-2.4);
+      vec3 ld = normalize(vec3(sin(ang)*0.9, -0.42+0.10*cos(ang), 0.70));
+      air += lc * cone(P, lap, ld, 0.99988, 22.0, 1.0) * uLaserI * hz * dt * 9.0;
+    }
+    tt += dt;
+  }
+
+  vec3 bg = vec3(0.0);
+  // BLD 客席向きブラインダー(直視)
+  for (int k=0;k<7;k++){
+    float bx = -6.0 + 2.0*float(k);
+    vec3 bp = vec3(bx,2.3,-1.6); vec3 bdir = normalize(bp-cam); float al = dot(rd,bdir);
+    if (al > 0.9985){
+      vec3 bcol = mix(vec3(1.0,0.6,0.32), warmC, uWarm);
+      bg += bcol * uBlindI * pow((al-0.9985)/0.0015, 2.0) * 2.2;
+    }
+  }
+  // 床
+  if (rd.y < -0.001){
+    float tf = (0.02-cam.y)/rd.y;
+    if (tf > 0.3){
+      vec3 Pf = cam + rd*tf;
+      if (abs(Pf.x) < 9.0 && Pf.z > -1.5 && Pf.z < 12.0){
+        float fl = uFloorI*0.30;
+        for (int k=0;k<5;k++){
+          float d2 = (Pf.x-px5(k))*(Pf.x-px5(k)) + (Pf.z-PZ)*(Pf.z-PZ);
+          fl += uTopI * exp(-d2/2.4) * 1.25;
+        }
+        fl += uWingI*0.30*exp(-((Pf.z-PZ)*(Pf.z-PZ))/14.0);
+        fl += uSideI*0.20*exp(-((Pf.z-PZ)*(Pf.z-PZ))/20.0);
+        fl += uBeamI*0.14*exp(-((Pf.z-PZ-1.5)*(Pf.z-PZ-1.5))/16.0);
+        fl += uPinI*0.55*exp(-(((Pf.x-uPinX)*(Pf.x-uPinX)+(Pf.z-PZ)*(Pf.z-PZ)))/1.3);
+        vec3 fc = mix(floorC, warmC*0.55, uWarm);
+        bg += fc * fl * exp(-max(0.0,Pf.z)/15.0);
+      }
+    }
+  }
+  // 演者5人
+  for (int k=0;k<5;k++){
+    vec3 perf = vec3(px5(k), 1.7, PZ); vec3 pw = perf-cam; float pz = dot(pw,fwd);
+    if (pz > 0.5){
+      float sxp = (dot(pw,right)/pz/(tanf*asp)*0.5+0.5)*W;
+      float syp_gl = (dot(pw,up)/pz/tanf*0.5+0.5)*H;
+      float hh = H*0.5/pz/tanf*0.9; float ww = hh*0.27;
+      float dy_gl = (gl_FragCoord.y - syp_gl)/hh; float dx = (gl_FragCoord.x - sxp)/ww;
+      float e = dx*dx + dy_gl*dy_gl;
+      if (e < 1.2){
+        float inside = 1.0-min(1.0,e); float rim = clamp((e-0.55)/0.55, 0.0, 1.0);
+        float top = max(0.0, 0.5+dy_gl);
+        float lat = min(1.0, dx*dx);
+        float pn = exp(-((px5(k)-uPinX)*(px5(k)-uPinX))/0.30);
+        bg += backC * uBackI * rim * 1.6;
+        bg += topC * uTopI * inside * top * 1.9;
+        bg += wingC * uWingI * inside * (0.20+0.80*lat) * 1.7;
+        bg += pinC * uPinI * pn * inside * 1.5;
+      }
+    }
+  }
+  float strobeFlicker = uStrobeI * (0.5+0.5*sin(uTime*30.0));
+  vec3 col = bg + air + vec3(strobeFlicker*0.25);
+  vec3 a = clamp(1.0-exp(-col*1.9), 0.0, 1.0);
+  a = pow(a, vec3(1.05));
+  outColor = vec4(a, 1.0);
+}`;
+
+const BLUR_FRAG = `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform sampler2D uTex; uniform vec2 uResolution;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uResolution;
+  vec2 texel = 1.0/uResolution;
+  vec3 sum = vec3(0.0); float wsum = 0.0;
+  for (int dx=-4; dx<=4; dx++){
+    for (int dy=-4; dy<=4; dy++){
+      float w = exp(-float(dx*dx+dy*dy)/8.0);
+      sum += texture(uTex, uv + vec2(float(dx),float(dy))*texel*1.6).rgb * w;
+      wsum += w;
+    }
+  }
+  outColor = vec4(sum/wsum, 1.0);
+}`;
+
+const COMPOSITE_FRAG = `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform sampler2D uScene; uniform sampler2D uBlur; uniform vec2 uResolution;
+void main(){
+  vec2 uv = gl_FragCoord.xy/uResolution;
+  vec3 a = texture(uScene, uv).rgb;
+  vec3 bl = texture(uBlur, uv).rgb;
+  vec3 outc = 1.0 - (1.0-a)*(1.0-bl*0.85);
+  outColor = vec4(outc, 1.0);
+}`;
+
+let glState = null;
+function initPreviewGL(){
+  const canvas = $('preview');
+  const gl = canvas.getContext('webgl2');
+  if (!gl){ console.warn('WebGL2 not available'); return null; }
+  function compile(type, src){
+    const sh = gl.createShader(type); gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(sh));
+    return sh;
+  }
+  function link(vsSrc, fsSrc){
+    const prog = gl.createProgram();
+    gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+    return prog;
+  }
+  function makeFBO(w,h){
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    return { fbo, tex };
+  }
+  const sceneProg = link(VERT_SRC, SCENE_FRAG);
+  const blurProg = link(VERT_SRC, BLUR_FRAG);
+  const compProg = link(VERT_SRC, COMPOSITE_FRAG);
+  const w = 480, h = 202;
+  const sceneFBO = makeFBO(w,h), blurFBO = makeFBO(w,h);
+  const vao = gl.createVertexArray(); // 属性なしのフルスクリーン三角形(gl_VertexID利用)
+  glState = { gl, sceneProg, blurProg, compProg, sceneFBO, blurFBO, w, h, vao };
+  return glState;
+}
+
+function u(gl, prog, name){ return gl.getUniformLocation(prog, name); }
+
+function renderPreviewGL(){
+  if (!glState) glState = initPreviewGL();
+  if (!glState) return;
+  const { gl, sceneProg, blurProg, compProg, sceneFBO, blurFBO, w, h, vao } = glState;
+  const canvas = $('preview');
+  const dpr = Math.min(2, window.devicePixelRatio||1);
+  const cssW = canvas.clientWidth||960, cssH = 180;
+  if (canvas.width !== Math.round(cssW*dpr) || canvas.height !== Math.round(cssH*dpr)){
+    canvas.width = Math.round(cssW*dpr); canvas.height = Math.round(cssH*dpr);
+  }
 
   const t = currentPlayTime();
-  const seg = activeSegmentAt(t);
-  ctx.fillStyle = '#000'; ctx.fillRect(0,0,cssW,cssH);
-  if (!seg){ $('previewPart').textContent='—'; $('previewFixtures').innerHTML=''; return; }
+  const seg = state.show ? activeSegmentAt(t) : null;
+  let uniforms = { topI:0, topCos:0.9975, wingI:0, pinI:0, pinX:0, sideI:0, beamI:0, blindI:0, strobeI:0, laserI:0, backI:0, floorI:0, haze:0.012, warm:0, sweep:t*0.45, lsweep:0.6*Math.sin(t*1.3), lfan:0.6, color:[0.5,0.6,0.7] };
 
-  const cue = seg.cue, p = seg.progress;
-  const [c1,c2] = resolveToken(COLOR_MAP, cue.color, '#8a8f9a');
-  const [i1,i2] = resolveToken(INTENSITY_MAP, cue.intensity!==undefined && cue.intensity!==''? cue.intensity : (typeof cue.intensity==='number'?String(cue.intensity):''), 0.4);
-  const col = lerpColor(c1,c2,p);
-  const inten = lerp(Number(i1)||0, Number(i2)||0, p);
+  if (seg){
+    const cue = seg.cue, p = seg.progress;
+    const [c1,c2] = resolveToken(COLOR_MAP, cue.color, '#8a8f9a');
+    const col = hexToRgb(lerpColor(c1,c2,p)).map(v=>v/255);
+    const [i1,i2] = resolveToken(INTENSITY_MAP, cue.intensity, 0.4);
+    const inten = lerp(Number(i1)||0, Number(i2)||0, p);
+    const [w1,w2] = resolveToken(WARM_MAP, cue.color, 0);
+    const warm = lerp(w1,w2,p);
 
-  const fixtures = String(cue.fixtures||'').split(',').map(s=>s.trim()).filter(Boolean);
-  const activeNames = FIXTURE_NAMES.filter(fn => fixtures.some(f => f.toUpperCase().indexOf(fn)===0));
-  const hasPin = activeNames.includes('PIN');
-  const hasTop = activeNames.includes('TOP');
-  const hasSide = activeNames.includes('SIDE-F') || activeNames.includes('MH-S');
-  const hasBack = activeNames.includes('BK');
-
-  // 全体washの明るさ(強度)
-  ctx.fillStyle = col;
-  ctx.globalAlpha = Math.min(0.55, inten*0.5);
-  ctx.fillRect(0,0,cssW,cssH);
-  ctx.globalAlpha = 1;
-
-  // 床
-  const floorY = cssH*0.72;
-  const floorGrad = ctx.createLinearGradient(0,floorY,0,cssH);
-  floorGrad.addColorStop(0, `rgba(255,255,255,${0.05+inten*0.15})`);
-  floorGrad.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = floorGrad;
-  ctx.fillRect(0,floorY,cssW,cssH-floorY);
-
-  // 5人の位置(previzスクリプトの配置を踏襲: 両端2+中央3)
-  const positions = [0.12,0.32,0.5,0.68,0.88];
-  positions.forEach((px, i) => {
-    const x = px*cssW, headY = floorY-46, r = 16;
-    // TOP: 頭上からの光柱
-    if (hasTop){
-      const g = ctx.createLinearGradient(x, headY-70, x, headY);
-      g.addColorStop(0, `rgba(${hexToRgb(col).join(',')},0)`);
-      g.addColorStop(1, `rgba(${hexToRgb(col).join(',')},${0.15+inten*0.5})`);
-      ctx.fillStyle = g;
-      ctx.beginPath(); ctx.moveTo(x-3,headY-70); ctx.lineTo(x+3,headY-70); ctx.lineTo(x+18,headY); ctx.lineTo(x-18,headY); ctx.closePath(); ctx.fill();
-    }
-    // 演者シルエット
-    ctx.fillStyle = hasBack ? `rgba(${hexToRgb(col).join(',')},0.9)` : '#15181f';
-    ctx.beginPath(); ctx.arc(x, headY, r, 0, Math.PI*2); ctx.fill();
-    ctx.fillRect(x-r*0.8, headY+r*0.6, r*1.6, r*1.8);
-    // SIDE-F: 横のリム
-    if (hasSide){
-      ctx.strokeStyle = `rgba(${hexToRgb(col).join(',')},${0.4+inten*0.5})`;
-      ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(x, headY, r+2, 0.2*Math.PI, 0.8*Math.PI); ctx.stroke();
-      ctx.beginPath(); ctx.arc(x, headY, r+2, 1.2*Math.PI, 1.8*Math.PI); ctx.stroke();
-    }
-  });
-
-  // PIN: 未来(中央寄り2番目)を単独で抜くケースが多いので中央-1の位置を強調
-  if (hasPin){
-    const px = positions[3]*cssW, headY = floorY-46;
-    const g = ctx.createRadialGradient(px, headY-10, 4, px, headY-10, 60);
-    g.addColorStop(0, `rgba(255,255,255,0.9)`);
-    g.addColorStop(0.3, `rgba(${hexToRgb(col).join(',')},${0.5+inten*0.4})`);
-    g.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = g;
-    ctx.beginPath(); ctx.arc(px, headY-10, 60, 0, Math.PI*2); ctx.fill();
+    const fixtures = String(cue.fixtures||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
+    const has = (fn) => fixtures.some(f => f.indexOf(fn)===0);
+    uniforms = {
+      topI: has('TOP') ? 0.35+inten*0.55 : 0,
+      topCos: 0.9975,
+      wingI: has('SIDE-F') ? 0.25+inten*0.5 : 0,
+      pinI: has('PIN') ? 0.5+inten*0.9 : 0,
+      pinX: 0,
+      sideI: has('MH-S') ? 0.2+inten*0.5 : 0,
+      beamI: has('MH-B') ? 0.15+inten*0.5 : 0,
+      blindI: has('BLD') ? 0.3+inten*0.9 : 0,
+      strobeI: has('STR') ? 0.3+inten*0.7 : 0,
+      laserI: has('LZR') ? 0.4+inten*0.6 : 0,
+      backI: has('BK') ? 0.25+inten*0.6 : 0,
+      floorI: 0.16+inten*0.12,
+      haze: 0.012+inten*0.02+(has('HZ')?0.01:0),
+      warm: warm,
+      sweep: t*0.45 + 0.3*Math.sin(t*0.3),
+      lsweep: 0.6*Math.sin(t*1.3),
+      lfan: has('LZR') ? 0.8 : 0.4,
+      color: col
+    };
+    $('previewPart').textContent = cue.part || '(無題)';
+    const activeNames = FIXTURE_NAMES.filter(fn => fixtures.some(f => f.indexOf(fn)===0));
+    $('previewFixtures').innerHTML = activeNames.map(n=>`<span class="fx">${n}</span>`).join('') || '<span class="fx">灯体なし</span>';
+  } else {
+    $('previewPart').textContent = '—'; $('previewFixtures').innerHTML = '';
   }
 
-  $('previewPart').textContent = cue.part || '(無題)';
-  $('previewFixtures').innerHTML = activeNames.map(n=>`<span class="fx">${n}</span>`).join('') || '<span class="fx">灯体なし</span>';
+  gl.bindVertexArray(vao);
+
+  // Pass A: シーン
+  gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFBO.fbo);
+  gl.viewport(0,0,w,h);
+  gl.useProgram(sceneProg);
+  gl.uniform2f(u(gl,sceneProg,'uResolution'), w, h);
+  gl.uniform1f(u(gl,sceneProg,'uTopI'), uniforms.topI);
+  gl.uniform1f(u(gl,sceneProg,'uTopCos'), uniforms.topCos);
+  gl.uniform1f(u(gl,sceneProg,'uWingI'), uniforms.wingI);
+  gl.uniform1f(u(gl,sceneProg,'uPinI'), uniforms.pinI);
+  gl.uniform1f(u(gl,sceneProg,'uPinX'), uniforms.pinX);
+  gl.uniform1f(u(gl,sceneProg,'uSideI'), uniforms.sideI);
+  gl.uniform1f(u(gl,sceneProg,'uBeamI'), uniforms.beamI);
+  gl.uniform1f(u(gl,sceneProg,'uBlindI'), uniforms.blindI);
+  gl.uniform1f(u(gl,sceneProg,'uStrobeI'), uniforms.strobeI);
+  gl.uniform1f(u(gl,sceneProg,'uLaserI'), uniforms.laserI);
+  gl.uniform1f(u(gl,sceneProg,'uBackI'), uniforms.backI);
+  gl.uniform1f(u(gl,sceneProg,'uFloorI'), uniforms.floorI);
+  gl.uniform1f(u(gl,sceneProg,'uHaze'), uniforms.haze);
+  gl.uniform1f(u(gl,sceneProg,'uWarm'), uniforms.warm);
+  gl.uniform1f(u(gl,sceneProg,'uSweep'), uniforms.sweep);
+  gl.uniform1f(u(gl,sceneProg,'uLSweep'), uniforms.lsweep);
+  gl.uniform1f(u(gl,sceneProg,'uLFan'), uniforms.lfan);
+  gl.uniform1f(u(gl,sceneProg,'uTime'), t);
+  gl.uniform3f(u(gl,sceneProg,'uColor'), uniforms.color[0], uniforms.color[1], uniforms.color[2]);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Pass B: ブルーム用ブラー
+  gl.bindFramebuffer(gl.FRAMEBUFFER, blurFBO.fbo);
+  gl.viewport(0,0,w,h);
+  gl.useProgram(blurProg);
+  gl.uniform2f(u(gl,blurProg,'uResolution'), w, h);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneFBO.tex);
+  gl.uniform1i(u(gl,blurProg,'uTex'), 0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // Pass C: 合成→キャンバス本体
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.useProgram(compProg);
+  gl.uniform2f(u(gl,compProg,'uResolution'), canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneFBO.tex);
+  gl.uniform1i(u(gl,compProg,'uScene'), 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, blurFBO.tex);
+  gl.uniform1i(u(gl,compProg,'uBlur'), 1);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
 function previewLoop(){
-  if (state.show) drawPreview();
+  renderPreviewGL();
   if (state.audioBuffer){
     $('timeLabel').textContent = fmtTime(currentPlayTime()) + ' / ' + fmtTime(state.duration);
   }
