@@ -85,6 +85,13 @@
   tr.cueRow td.num{font-variant-numeric:tabular-nums;color:var(--sub);}
   tr.cueRow.measured td.time{color:var(--ok);}
   .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;margin-right:3px;}
+  .fxCheckGroup{display:flex;flex-wrap:wrap;gap:4px;}
+  .fxCheckGroup label{
+    display:inline-flex;align-items:center;gap:4px;background:var(--panel2);border:1px solid var(--line);
+    border-radius:6px;padding:4px 8px;font-size:12px;color:var(--text);cursor:pointer;
+  }
+  .fxCheckGroup label.checked{border-color:var(--accent2);background:#2a2416;color:var(--accent2);}
+  .fxCheckGroup input{width:auto;margin:0;}
 </style>
 </head>
 <body>
@@ -145,7 +152,7 @@
           <div class="field"><label>区間終了（秒・任意）</label><input type="text" id="f_timeEnd"></div>
         </div>
         <div class="field"><label>パート名</label><input type="text" id="f_part"></div>
-        <div class="field"><label>灯体（カンマ区切り）</label><input type="text" id="f_fixtures" placeholder="TOP, SIDE-F"></div>
+        <div class="field"><label>灯体</label><div id="f_fixtures_group" class="fxCheckGroup"></div></div>
         <div class="fieldRow">
           <div class="field"><label>色</label><input type="text" id="f_color"></div>
           <div class="field"><label>強度</label><input type="text" id="f_intensity"></div>
@@ -291,12 +298,39 @@ function showDetail(id){
   if (!c){ $('noSelection').style.display=''; $('detailForm').style.display='none'; return; }
   $('noSelection').style.display='none'; $('detailForm').style.display='';
   $('f_time').value = c.time; $('f_timeEnd').value = c.timeEnd==null?'':c.timeEnd;
-  $('f_part').value = c.part||''; $('f_fixtures').value = c.fixtures||'';
+  $('f_part').value = c.part||''; syncFixtureCheckboxes(c.fixtures||'');
   $('f_color').value = c.color||''; $('f_intensity').value = c.intensity||'';
   $('f_memo').value = c.memo||''; $('f_measured').checked = !!c.measured;
 }
 
-['f_time','f_timeEnd','f_part','f_fixtures','f_color','f_intensity','f_memo'].forEach(id=>{
+function buildFixtureCheckboxes(){
+  const group = $('f_fixtures_group');
+  group.innerHTML = FIXTURE_NAMES.map(name => `
+    <label data-fx="${name}">
+      <input type="checkbox" value="${name}">${name}
+    </label>`).join('');
+  group.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const c = state.cues.find(x=>x._id===state.selectedIdx);
+      if (!c) return;
+      const checked = Array.from(group.querySelectorAll('input:checked')).map(i=>i.value);
+      c.fixtures = checked.join(', ');
+      group.querySelectorAll('label').forEach(l => l.classList.toggle('checked', l.querySelector('input').checked));
+      renderTable(); renderMarkers();
+    });
+  });
+}
+function syncFixtureCheckboxes(fixturesStr){
+  const active = String(fixturesStr||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
+  $('f_fixtures_group').querySelectorAll('label').forEach(l => {
+    const name = l.dataset.fx;
+    const on = active.some(f => f.indexOf(name)===0);
+    l.querySelector('input').checked = on;
+    l.classList.toggle('checked', on);
+  });
+}
+
+['f_time','f_timeEnd','f_part','f_color','f_intensity','f_memo'].forEach(id=>{
   $(id).addEventListener('input', () => {
     const c = state.cues.find(x=>x._id===state.selectedIdx);
     if (!c) return;
@@ -453,6 +487,7 @@ const INTENSITY_MAP = {
 };
 const FIXTURE_NAMES = ['SIDE-F','TOP','MH-S','MH-B','PIN','BLD','STR','LZR','HZ','BK','KEY'];
 const WARM_MAP = { '暖色':1,'寒色':0,'青':0,'青緑':0,'白':0,'水色':0,'無色':0,'無色（素）':0,'未定':0,'—':0,'':0 };
+buildFixtureCheckboxes();
 
 function resolveToken(map, raw, fallback){
   raw = (raw===undefined||raw===null) ? '' : String(raw).trim();
