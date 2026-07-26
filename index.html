@@ -57,6 +57,13 @@
 
   #hint{font-size:12px;color:var(--sub);margin-top:6px;}
 
+  #previewWrap{background:#000;border:1px solid var(--line);border-radius:8px;padding:0;margin-bottom:10px;overflow:hidden;position:relative;}
+  canvas#preview{display:block;width:100%;height:180px;}
+  #previewInfo{position:absolute;left:10px;bottom:8px;font-size:12px;color:#cfd6e6;text-shadow:0 1px 3px #000;}
+  #previewInfo .part{font-weight:600;color:#fff;}
+  #previewInfo .fixtures{margin-top:2px;}
+  #previewInfo .fx{display:inline-block;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:4px;padding:1px 6px;margin-right:4px;font-size:10.5px;}
+
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;}
   #detailPanel{width:320px;flex:none;}
   #detailPanel h3{margin:0 0 10px;font-size:13px;color:var(--sub);font-weight:600;}
@@ -93,6 +100,13 @@
 
 <main>
   <div id="waveWrap" style="display:none;">
+    <div id="previewWrap">
+      <canvas id="preview"></canvas>
+      <div id="previewInfo">
+        <div class="part" id="previewPart">—</div>
+        <div class="fixtures" id="previewFixtures"></div>
+      </div>
+    </div>
     <div id="waveToolbar">
       <input type="file" id="audioFile" accept="audio/*">
       <button id="playBtn">▶ 再生</button>
@@ -427,11 +441,148 @@ $('playBtn').addEventListener('click', () => {
     $('playBtn').textContent = '⏸ 停止';
   }
 });
-setInterval(() => {
+// ---------- ライトプレビュー(簡易) ----------
+const COLOR_MAP = {
+  '寒色':'#5fa8ff','暖色':'#ffb26e','青':'#3a6bff','青緑':'#33cbb0','白':'#ffffff','水色':'#7fd9ff',
+  '無色':'#fff2df','無色（素）':'#fff2df','未定':'#8a8f9a','—':'#000000','': '#8a8f9a'
+};
+const INTENSITY_MAP = {
+  '0':0,'極小':0.08,'小':0.22,'中':0.5,'高':0.78,'最大':1.0,'垂れる':0.28,
+  '中（拍で抜く）':0.5,'中（瞬間）':0.6,'高（点滅）':0.8,'高（瞬間）':0.9,
+  '小（顔が見える最低限）':0.16,'寒色（わずかに揺らす）':0.5
+};
+const FIXTURE_NAMES = ['SIDE-F','TOP','MH-S','MH-B','PIN','BLD','STR','LZR','HZ','BK','KEY'];
+
+function resolveToken(map, raw, fallback){
+  raw = String(raw||'').trim();
+  if (raw in map) return [map[raw], map[raw]];
+  // "A→B" のような遷移表記を分割
+  const arrowParts = raw.split(/[→〜]/).map(s=>s.trim());
+  if (arrowParts.length >= 2){
+    const a = map[arrowParts[0]] !== undefined ? map[arrowParts[0]] : fallback;
+    const b = map[arrowParts[arrowParts.length-1]] !== undefined ? map[arrowParts[arrowParts.length-1]] : fallback;
+    return [a, b];
+  }
+  return [fallback, fallback];
+}
+
+function hexToRgb(hex){
+  hex = hex.replace('#','');
+  if (hex.length===3) hex = hex.split('').map(c=>c+c).join('');
+  const n = parseInt(hex,16);
+  return [(n>>16)&255,(n>>8)&255,n&255];
+}
+function lerp(a,b,t){ return a+(b-a)*t; }
+function lerpColor(c1,c2,t){
+  const a=hexToRgb(c1), b=hexToRgb(c2);
+  return `rgb(${Math.round(lerp(a[0],b[0],t))},${Math.round(lerp(a[1],b[1],t))},${Math.round(lerp(a[2],b[2],t))})`;
+}
+
+function activeSegmentAt(t){
+  const sorted = state.cues.slice().sort((a,b)=>(Number(a.time)||0)-(Number(b.time)||0));
+  let cur = null, idx = -1;
+  for (let i=0;i<sorted.length;i++){
+    if ((Number(sorted[i].time)||0) <= t) { cur = sorted[i]; idx = i; } else break;
+  }
+  if (!cur) return null;
+  const segEnd = (cur.timeEnd!=null && cur.timeEnd!=='') ? Number(cur.timeEnd)
+    : (sorted[idx+1] ? Number(sorted[idx+1].time) : state.duration);
+  const segStart = Number(cur.time)||0;
+  const progress = segEnd > segStart ? Math.min(1, Math.max(0, (t-segStart)/(segEnd-segStart))) : 0;
+  return { cue: cur, progress };
+}
+
+function drawPreview(){
+  const canvas = $('preview');
+  const dpr = window.devicePixelRatio||1;
+  const cssW = canvas.clientWidth||960, cssH = 180;
+  if (canvas.width !== cssW*dpr || canvas.height !== cssH*dpr){
+    canvas.width = cssW*dpr; canvas.height = cssH*dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cssW,cssH);
+
+  const t = currentPlayTime();
+  const seg = activeSegmentAt(t);
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,cssW,cssH);
+  if (!seg){ $('previewPart').textContent='—'; $('previewFixtures').innerHTML=''; return; }
+
+  const cue = seg.cue, p = seg.progress;
+  const [c1,c2] = resolveToken(COLOR_MAP, cue.color, '#8a8f9a');
+  const [i1,i2] = resolveToken(INTENSITY_MAP, cue.intensity!==undefined && cue.intensity!==''? cue.intensity : (typeof cue.intensity==='number'?String(cue.intensity):''), 0.4);
+  const col = lerpColor(c1,c2,p);
+  const inten = lerp(Number(i1)||0, Number(i2)||0, p);
+
+  const fixtures = String(cue.fixtures||'').split(',').map(s=>s.trim()).filter(Boolean);
+  const activeNames = FIXTURE_NAMES.filter(fn => fixtures.some(f => f.toUpperCase().indexOf(fn)===0));
+  const hasPin = activeNames.includes('PIN');
+  const hasTop = activeNames.includes('TOP');
+  const hasSide = activeNames.includes('SIDE-F') || activeNames.includes('MH-S');
+  const hasBack = activeNames.includes('BK');
+
+  // 全体washの明るさ(強度)
+  ctx.fillStyle = col;
+  ctx.globalAlpha = Math.min(0.55, inten*0.5);
+  ctx.fillRect(0,0,cssW,cssH);
+  ctx.globalAlpha = 1;
+
+  // 床
+  const floorY = cssH*0.72;
+  const floorGrad = ctx.createLinearGradient(0,floorY,0,cssH);
+  floorGrad.addColorStop(0, `rgba(255,255,255,${0.05+inten*0.15})`);
+  floorGrad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = floorGrad;
+  ctx.fillRect(0,floorY,cssW,cssH-floorY);
+
+  // 5人の位置(previzスクリプトの配置を踏襲: 両端2+中央3)
+  const positions = [0.12,0.32,0.5,0.68,0.88];
+  positions.forEach((px, i) => {
+    const x = px*cssW, headY = floorY-46, r = 16;
+    // TOP: 頭上からの光柱
+    if (hasTop){
+      const g = ctx.createLinearGradient(x, headY-70, x, headY);
+      g.addColorStop(0, `rgba(${hexToRgb(col).join(',')},0)`);
+      g.addColorStop(1, `rgba(${hexToRgb(col).join(',')},${0.15+inten*0.5})`);
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.moveTo(x-3,headY-70); ctx.lineTo(x+3,headY-70); ctx.lineTo(x+18,headY); ctx.lineTo(x-18,headY); ctx.closePath(); ctx.fill();
+    }
+    // 演者シルエット
+    ctx.fillStyle = hasBack ? `rgba(${hexToRgb(col).join(',')},0.9)` : '#15181f';
+    ctx.beginPath(); ctx.arc(x, headY, r, 0, Math.PI*2); ctx.fill();
+    ctx.fillRect(x-r*0.8, headY+r*0.6, r*1.6, r*1.8);
+    // SIDE-F: 横のリム
+    if (hasSide){
+      ctx.strokeStyle = `rgba(${hexToRgb(col).join(',')},${0.4+inten*0.5})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(x, headY, r+2, 0.2*Math.PI, 0.8*Math.PI); ctx.stroke();
+      ctx.beginPath(); ctx.arc(x, headY, r+2, 1.2*Math.PI, 1.8*Math.PI); ctx.stroke();
+    }
+  });
+
+  // PIN: 未来(中央寄り2番目)を単独で抜くケースが多いので中央-1の位置を強調
+  if (hasPin){
+    const px = positions[3]*cssW, headY = floorY-46;
+    const g = ctx.createRadialGradient(px, headY-10, 4, px, headY-10, 60);
+    g.addColorStop(0, `rgba(255,255,255,0.9)`);
+    g.addColorStop(0.3, `rgba(${hexToRgb(col).join(',')},${0.5+inten*0.4})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(px, headY-10, 60, 0, Math.PI*2); ctx.fill();
+  }
+
+  $('previewPart').textContent = cue.part || '(無題)';
+  $('previewFixtures').innerHTML = activeNames.map(n=>`<span class="fx">${n}</span>`).join('') || '<span class="fx">灯体なし</span>';
+}
+
+function previewLoop(){
+  if (state.show) drawPreview();
   if (state.audioBuffer){
     $('timeLabel').textContent = fmtTime(currentPlayTime()) + ' / ' + fmtTime(state.duration);
   }
-}, 100);
+  requestAnimationFrame(previewLoop);
+}
+requestAnimationFrame(previewLoop);
 
 loadShows();
 </script>
