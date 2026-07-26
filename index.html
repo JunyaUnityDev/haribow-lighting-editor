@@ -116,6 +116,7 @@
     </div>
     <div id="waveToolbar">
       <input type="file" id="audioFile" accept="audio/*">
+      <span id="audioFileLabel" style="font-size:12px;color:var(--sub);"></span>
       <button id="playBtn">▶ 再生</button>
       <span class="time" id="timeLabel">0:00.00 / 0:00.00</span>
       <div class="spacer"></div>
@@ -126,7 +127,7 @@
       <canvas id="wave" height="140"></canvas>
       <div id="cueLayer"></div>
     </div>
-    <div id="hint">タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。</div>
+    <div id="hint">タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。</div>
   </div>
 
   <div class="row" id="editArea" style="display:none;">
@@ -240,6 +241,42 @@ async function selectShow(name){
   renderMarkers();
   showDetail(-1);
   setStatus('読込完了（'+state.cues.length+'件）', 'ok');
+  await loadCachedAudio(name);
+}
+
+// ---------- 音源キャッシュ(IndexedDB。演目ごとに1回選べば次回から自動読込) ----------
+function audioDb_(){
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('lightingEditorAudio', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('files');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function saveCachedAudio(show, file){
+  const db = await audioDb_();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('files','readwrite');
+    tx.objectStore('files').put({ name:file.name, blob:file }, show);
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+}
+async function loadCachedAudio(show){
+  try{
+    const db = await audioDb_();
+    const rec = await new Promise((resolve, reject) => {
+      const tx = db.transaction('files','readonly');
+      const req = tx.objectStore('files').get(show);
+      req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+    });
+    if (!rec) { $('audioFileLabel').textContent = '（この演目の音源はまだキャッシュされていません。下で選択してください）'; return; }
+    const buf = await rec.blob.arrayBuffer();
+    const decoded = await audioCtx.decodeAudioData(buf);
+    state.audioBuffer = decoded; state.duration = decoded.duration;
+    state.playOffset = 0; state.isPlaying = false; $('playBtn').textContent = '▶ 再生';
+    drawWave();
+    $('audioFileLabel').textContent = '音源: ' + rec.name + '（キャッシュから自動読込）';
+  } catch(e){ console.warn('audio cache load failed', e); }
 }
 
 // ---------- 保存 ----------
@@ -374,6 +411,10 @@ $('audioFile').addEventListener('change', async (e) => {
   state.audioBuffer = decoded;
   state.duration = decoded.duration;
   drawWave();
+  if (state.show){
+    await saveCachedAudio(state.show, file);
+    $('audioFileLabel').textContent = '音源: ' + file.name + '（このブラウザに記憶しました）';
+  }
   setStatus('');
 });
 
