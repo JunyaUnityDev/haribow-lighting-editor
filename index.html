@@ -37,9 +37,16 @@
   #waveWrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:16px;}
   #waveToolbar{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
   #waveToolbar .time{font-variant-numeric:tabular-nums;color:var(--sub);font-size:13px;}
-  #timelineOuter{position:relative;overflow-x:auto;border-radius:6px;}
-  canvas#wave{display:block;background:#0b0d12;border-radius:6px;cursor:crosshair;}
-  #cueLayer{position:absolute;top:0;left:0;height:100%;pointer-events:none;}
+  #timelineOuter{display:flex;border-radius:6px;overflow:hidden;}
+  #laneLabels{flex:none;width:60px;background:#0b0d12;}
+  #laneLabels .waveSpacer{height:140px;}
+  #laneLabels .laneLabel{height:18px;font-size:9.5px;color:var(--sub);display:flex;align-items:center;padding-left:6px;border-top:1px solid #1c202a;white-space:nowrap;}
+  #timelineScroll{position:relative;overflow-x:auto;flex:1;}
+  canvas#wave{display:block;background:#0b0d12;cursor:crosshair;}
+  #cueLayer{position:absolute;top:0;left:0;height:140px;pointer-events:none;}
+  #lanesLayer{position:relative;}
+  .laneRow{height:18px;position:relative;border-top:1px solid #1c202a;background:#0d0f14;}
+  .laneBar{position:absolute;top:2px;height:14px;border-radius:3px;opacity:0.85;}
   .cueMarker{
     position:absolute;top:0;width:2px;height:100%;background:var(--accent2);
     pointer-events:auto;cursor:ew-resize;
@@ -50,6 +57,7 @@
   }
   .cueMarker.selected{background:var(--ok);}
   .cueMarker.selected::before{background:var(--ok);}
+  .cueMarker.measured::after{content:'★';position:absolute;top:-32px;left:-3px;font-size:9px;color:#ffd76e;}
   .cueMarker .label{
     position:absolute;top:-20px;left:-4px;font-size:10px;color:var(--sub);
     white-space:nowrap;pointer-events:none;
@@ -120,14 +128,22 @@
       <button id="playBtn">▶ 再生</button>
       <span class="time" id="timeLabel">0:00.00 / 0:00.00</span>
       <div class="spacer"></div>
+      <label style="font-size:12px;color:var(--sub);display:flex;align-items:center;gap:4px;">
+        グリッド(CSV)<input type="file" id="gridFile" accept=".csv,.json" style="width:110px;">
+      </label>
+      <span id="gridStatusLabel" style="font-size:12px;color:var(--sub);"></span>
       <button id="reloadBtn">再読込</button>
       <button id="saveBtn" class="primary">保存</button>
     </div>
     <div id="timelineOuter">
-      <canvas id="wave" height="140"></canvas>
-      <div id="cueLayer"></div>
+      <div id="laneLabels"><div class="waveSpacer"></div></div>
+      <div id="timelineScroll">
+        <canvas id="wave" height="140"></canvas>
+        <div id="cueLayer"></div>
+        <div id="lanesLayer"></div>
+      </div>
     </div>
-    <div id="hint">タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。</div>
+    <div id="hint">タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。</div>
   </div>
 
   <div class="row" id="editArea" style="display:none;">
@@ -172,7 +188,7 @@ const API = 'https://script.google.com/macros/s/AKfycbyBhP557ISUfV4-laUz94wjo5OY
 let state = {
   show: null, cues: [], selectedIdx: -1, baseVersion: '',
   audioBuffer: null, duration: 0, isPlaying: false, playStart: 0, playOffset: 0,
-  pxPerSec: 40
+  pxPerSec: 40, snapGrid: []
 };
 
 const $ = (id) => document.getElementById(id);
@@ -242,16 +258,66 @@ async function selectShow(name){
   showDetail(-1);
   setStatus('読込完了（'+state.cues.length+'件）', 'ok');
   await loadCachedAudio(name);
+  await loadCachedGrid(name);
 }
 
-// ---------- 音源キャッシュ(IndexedDB。演目ごとに1回選べば次回から自動読込) ----------
+// ---------- 音源/グリッドキャッシュ(IndexedDB。演目ごとに1回選べば次回から自動読込) ----------
 function audioDb_(){
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('lightingEditorAudio', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('files');
+    const req = indexedDB.open('lightingEditorAudio', 2);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains('files')) db.createObjectStore('files');
+      if (!db.objectStoreNames.contains('grids')) db.createObjectStore('grids');
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
+}
+
+// カウントグリッドCSV(eight,start_mmss,...,count1_s..count8_s,start_s,end_s)から吸着ポイント配列を作る
+function parseGridCsv(text){
+  const lines = text.trim().split(/\r?\n/);
+  const header = lines[0].split(',').map(s=>s.trim());
+  const countIdx = header.map((h,i)=> /^count\d+_s$/i.test(h) ? i : -1).filter(i=>i>=0);
+  if (!countIdx.length) return [];
+  const points = new Set();
+  for (let li=1; li<lines.length; li++){
+    const cols = lines[li].split(',');
+    countIdx.forEach(i => { const v = Number(cols[i]); if (!isNaN(v)) points.add(Math.round(v*100)/100); });
+  }
+  return Array.from(points).sort((a,b)=>a-b);
+}
+
+async function saveCachedGrid(show, points){
+  const db = await audioDb_();
+  await new Promise((resolve, reject) => {
+    const tx = db.transaction('grids','readwrite');
+    tx.objectStore('grids').put(points, show);
+    tx.oncomplete = resolve; tx.onerror = () => reject(tx.error);
+  });
+}
+async function loadCachedGrid(show){
+  try{
+    const db = await audioDb_();
+    const rec = await new Promise((resolve, reject) => {
+      const tx = db.transaction('grids','readonly');
+      const req = tx.objectStore('grids').get(show);
+      req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error);
+    });
+    state.snapGrid = rec || [];
+    $('gridStatusLabel') && ($('gridStatusLabel').textContent = state.snapGrid.length ? `グリッド: ${state.snapGrid.length}点` : '');
+  } catch(e){ state.snapGrid = []; }
+}
+
+function snapTime(t, bypass){
+  if (bypass || !state.snapGrid.length) return t;
+  let best = t, bestDist = 0.15; // 0.15秒以内なら吸着
+  for (const g of state.snapGrid){
+    const d = Math.abs(g-t);
+    if (d < bestDist){ best = g; bestDist = d; }
+  }
+  return best;
 }
 async function saveCachedAudio(show, file){
   const db = await audioDb_();
@@ -418,6 +484,16 @@ $('audioFile').addEventListener('change', async (e) => {
   setStatus('');
 });
 
+$('gridFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file || !state.show) return;
+  const text = await file.text();
+  const points = parseGridCsv(text);
+  state.snapGrid = points;
+  await saveCachedGrid(state.show, points);
+  $('gridStatusLabel').textContent = `グリッド: ${points.length}点（記憶しました）`;
+});
+
 function drawWave(){
   const canvas = $('wave');
   const buf = state.audioBuffer;
@@ -450,6 +526,7 @@ function drawWave(){
   }
   $('cueLayer').style.width = width+'px';
   $('cueLayer').style.height = canvas.height+'px';
+  $('lanesLayer').style.width = width+'px';
   renderMarkers();
 }
 
@@ -458,22 +535,67 @@ function renderMarkers(){
   layer.innerHTML = '';
   state.cues.forEach(c => {
     const el = document.createElement('div');
-    el.className = 'cueMarker' + (c._id===state.selectedIdx?' selected':'');
+    el.className = 'cueMarker' + (c._id===state.selectedIdx?' selected':'') + (c.measured?' measured':'');
     el.style.left = (Number(c.time)||0)*state.pxPerSec + 'px';
     el.innerHTML = '<div class="label">'+escapeHtml(c.part||'')+'</div>';
     el.addEventListener('mousedown', (ev) => startDrag(ev, c._id));
     el.addEventListener('click', (ev) => { ev.stopPropagation(); showDetail(c._id); });
     layer.appendChild(el);
   });
+  renderLanes();
+}
+
+// ---------- 灯体レーン(ガントチャート的に、どの灯体がいつ生きてるか一覧) ----------
+const LANE_COLORS = ['#ffb26e','#6ea8ff','#6effa0','#ff8bd6','#c9a6ff','#ffe36e','#7fd9ff','#ff8b6e','#a6ffb0','#d6a6ff','#f0f0f0'];
+function buildLaneLabels(){
+  const wrap = $('laneLabels');
+  const spacer = wrap.querySelector('.waveSpacer');
+  wrap.innerHTML = '';
+  wrap.appendChild(spacer);
+  FIXTURE_NAMES.forEach(name => {
+    const d = document.createElement('div');
+    d.className = 'laneLabel'; d.textContent = name;
+    wrap.appendChild(d);
+  });
+}
+function computeSegments(){
+  const sorted = state.cues.slice().sort((a,b)=>(Number(a.time)||0)-(Number(b.time)||0));
+  return sorted.map((c,i) => {
+    const start = Number(c.time)||0;
+    const end = (c.timeEnd!=null && c.timeEnd!=='') ? Number(c.timeEnd) : (sorted[i+1] ? Number(sorted[i+1].time) : state.duration||start+3);
+    return { cue:c, start, end: Math.max(end,start+0.05) };
+  });
+}
+function renderLanes(){
+  const layer = $('lanesLayer');
+  layer.innerHTML = '';
+  const segs = computeSegments();
+  FIXTURE_NAMES.forEach((name, i) => {
+    const row = document.createElement('div');
+    row.className = 'laneRow';
+    segs.forEach(seg => {
+      const fixtures = String(seg.cue.fixtures||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
+      if (!fixtures.some(f => f.indexOf(name)===0)) return;
+      const bar = document.createElement('div');
+      bar.className = 'laneBar';
+      bar.style.left = seg.start*state.pxPerSec + 'px';
+      bar.style.width = Math.max(2,(seg.end-seg.start)*state.pxPerSec) + 'px';
+      bar.style.background = LANE_COLORS[i % LANE_COLORS.length];
+      bar.title = name + ': ' + (seg.cue.part||'');
+      row.appendChild(bar);
+    });
+    layer.appendChild(row);
+  });
 }
 
 function startDrag(ev, id){
   ev.preventDefault(); ev.stopPropagation();
-  const outer = $('timelineOuter');
+  const outer = $('timelineScroll');
   function onMove(e){
     const rect = $('wave').getBoundingClientRect();
     const x = e.clientX - rect.left + outer.scrollLeft;
-    const t = Math.max(0, x / state.pxPerSec);
+    let t = Math.max(0, x / state.pxPerSec);
+    t = snapTime(t, e.shiftKey);
     const c = state.cues.find(c=>c._id===id);
     if (c){ c.time = Math.round(t*100)/100; }
     renderMarkers();
@@ -491,7 +613,8 @@ function startDrag(ev, id){
 $('wave').addEventListener('click', (e) => {
   const rect = $('wave').getBoundingClientRect();
   const x = e.clientX - rect.left;
-  const t = x / state.pxPerSec;
+  let t = x / state.pxPerSec;
+  t = snapTime(t, e.shiftKey);
   addCueAt(t);
 });
 
@@ -516,6 +639,44 @@ $('playBtn').addEventListener('click', () => {
     $('playBtn').textContent = '⏸ 停止';
   }
 });
+
+function seekTo(t){
+  if (!state.audioBuffer) { state.playOffset = Math.max(0,t); return; }
+  t = Math.max(0, Math.min(state.duration, t));
+  if (state.isPlaying){
+    sourceNode.stop();
+    state.playOffset = t;
+    sourceNode = audioCtx.createBufferSource();
+    sourceNode.buffer = state.audioBuffer;
+    sourceNode.connect(audioCtx.destination);
+    sourceNode.start(0, state.playOffset % state.duration);
+    state.playStart = audioCtx.currentTime;
+  } else {
+    state.playOffset = t;
+  }
+}
+
+// ---------- キーボードショートカット ----------
+document.addEventListener('keydown', (e) => {
+  const tag = document.activeElement ? document.activeElement.tagName : '';
+  if (tag==='INPUT' || tag==='TEXTAREA') return;
+  if (!state.show) return;
+  if (e.code==='Space'){
+    e.preventDefault(); $('playBtn').click();
+  } else if (e.code==='ArrowRight' || e.code==='ArrowLeft'){
+    e.preventDefault();
+    const sorted = state.cues.slice().sort((a,b)=>(Number(a.time)||0)-(Number(b.time)||0));
+    if (!sorted.length) return;
+    let idx = sorted.findIndex(c=>c._id===state.selectedIdx);
+    if (e.code==='ArrowRight') idx = (idx<0) ? 0 : Math.min(sorted.length-1, idx+1);
+    else idx = (idx<0) ? sorted.length-1 : Math.max(0, idx-1);
+    const c = sorted[idx];
+    showDetail(c._id);
+    seekTo(Number(c.time)||0);
+  } else if (e.code==='Delete' || e.code==='Backspace'){
+    if (state.selectedIdx>=0){ e.preventDefault(); deleteCue(state.selectedIdx); }
+  }
+});
 // ---------- ライトプレビュー(簡易) ----------
 const COLOR_MAP = {
   '寒色':'#5fa8ff','暖色':'#ffb26e','青':'#3a6bff','青緑':'#33cbb0','白':'#ffffff','水色':'#7fd9ff',
@@ -529,6 +690,7 @@ const INTENSITY_MAP = {
 const FIXTURE_NAMES = ['SIDE-F','TOP','MH-S','MH-B','PIN','BLD','STR','LZR','HZ','BK','KEY'];
 const WARM_MAP = { '暖色':1,'寒色':0,'青':0,'青緑':0,'白':0,'水色':0,'無色':0,'無色（素）':0,'未定':0,'—':0,'':0 };
 buildFixtureCheckboxes();
+buildLaneLabels();
 
 function resolveToken(map, raw, fallback){
   raw = (raw===undefined||raw===null) ? '' : String(raw).trim();
