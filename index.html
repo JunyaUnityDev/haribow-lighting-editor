@@ -92,6 +92,14 @@
   tr.cueRow.selected{background:#22304a;}
   tr.cueRow td.num{font-variant-numeric:tabular-nums;color:var(--sub);}
   tr.cueRow.measured td.time{color:var(--ok);}
+  /* 外せない演出（2026-09-24）。全部を指示するのではなく要所だけを守ってもらうための区別 */
+  tr.cueRow.must{background:rgba(255,120,120,.07);}
+  tr.cueRow.must td{border-top:1px solid rgba(255,140,140,.35);}
+  .mustDot{color:#ff7f7f;margin-right:4px;font-size:9px;vertical-align:1px;}
+  .cueMarker.must{background:#ff7f7f;width:3px;}
+  .cueMarker.must .label{color:#ffc9c9;font-weight:600;}
+  .mustLabel{display:flex;align-items:flex-start;gap:6px;line-height:1.5;}
+  .mustLabel b{color:#ff9f9f;}
   .tag{display:inline-block;background:var(--panel2);border:1px solid var(--line);border-radius:4px;padding:1px 6px;font-size:11px;margin-right:3px;}
   .fxCheckGroup{display:flex;flex-wrap:wrap;gap:4px;}
   .fxCheckGroup label{
@@ -176,6 +184,7 @@
         </div>
         <div class="field"><label>メモ</label><textarea id="f_memo"></textarea></div>
         <div class="field"><label><input type="checkbox" id="f_measured" style="width:auto;"> JUNYA実測</label></div>
+        <div class="field"><label class="mustLabel"><input type="checkbox" id="f_must" style="width:auto;"> <b>外せない演出</b>（ここは業者に必ず守ってもらう。外したものは「お任せ」扱い）</label></div>
         <button id="deleteCueBtn" class="danger">このキューを削除</button>
       </div>
     </div>
@@ -352,7 +361,7 @@ $('saveBtn').addEventListener('click', async () => {
   if (!editor){ alert('あなたの名前を入力してください（右上）'); return; }
   setStatus('保存中…');
   const cues = state.cues.map(c => ({ time:Number(c.time)||0, timeEnd: c.timeEnd===''||c.timeEnd==null?null:Number(c.timeEnd),
-    part:c.part||'', fixtures:c.fixtures||'', color:c.color||'', intensity:c.intensity||'', memo:c.memo||'', measured:!!c.measured }));
+    part:c.part||'', fixtures:c.fixtures||'', color:c.color||'', intensity:c.intensity||'', memo:c.memo||'', measured:!!c.measured, must:!!c.must }));
   const r = await api(null, null, 'POST', { action:'saveCues', show: state.show, cues, editor, baseVersion: state.baseVersion });
   if (!r.ok){
     if (r.error === 'conflict'){
@@ -377,8 +386,8 @@ function renderTable(){
   const sorted = state.cues.slice().sort((a,b)=>(Number(a.time)||0)-(Number(b.time)||0));
   sorted.forEach((c) => {
     const tr = document.createElement('tr');
-    tr.className = 'cueRow' + (c._id===state.selectedIdx?' selected':'') + (c.measured?' measured':'');
-    tr.innerHTML = `<td class="num">${c._id+1}</td><td class="time num">${fmtTime(c.time)}</td>
+    tr.className = 'cueRow' + (c._id===state.selectedIdx?' selected':'') + (c.measured?' measured':'') + (c.must?' must':'');
+    tr.innerHTML = `<td class="num">${c.must?'<span class="mustDot" title="外せない演出">●</span>':''}${c._id+1}</td><td class="time num">${fmtTime(c.time)}</td>
       <td class="num">${c.timeEnd?fmtTime(c.timeEnd):''}</td><td>${escapeHtml(c.part||'')}</td>
       <td>${escapeHtml(c.fixtures||'')}</td><td>${escapeHtml(c.color||'')}</td><td>${escapeHtml(String(c.intensity||''))}</td>
       <td><button data-del="${c._id}" class="danger" style="padding:2px 8px;">×</button></td>`;
@@ -403,7 +412,7 @@ function showDetail(id){
   $('f_time').value = c.time; $('f_timeEnd').value = c.timeEnd==null?'':c.timeEnd;
   $('f_part').value = c.part||''; syncFixtureCheckboxes(c.fixtures||'');
   $('f_color').value = c.color||''; $('f_intensity').value = c.intensity||'';
-  $('f_memo').value = c.memo||''; $('f_measured').checked = !!c.measured;
+  $('f_memo').value = c.memo||''; $('f_measured').checked = !!c.measured; $('f_must').checked = !!c.must;
 }
 
 function buildFixtureCheckboxes(){
@@ -444,6 +453,11 @@ function syncFixtureCheckboxes(fixturesStr){
     renderTable(); renderMarkers();
   });
 });
+$('f_must').addEventListener('change', () => {
+  const c = state.cues.find(x=>x._id===state.selectedIdx);
+  if (c) c.must = $('f_must').checked;
+  renderTable(); renderMarkers();
+});
 $('f_measured').addEventListener('change', () => {
   const c = state.cues.find(x=>x._id===state.selectedIdx);
   if (c) c.measured = $('f_measured').checked;
@@ -461,7 +475,7 @@ $('addCueBtn').addEventListener('click', () => addCueAt(currentPlayTime()));
 
 function nextId(){ return state.cues.length ? Math.max(...state.cues.map(c=>c._id))+1 : 0; }
 function addCueAt(t){
-  const c = { _id: nextId(), time: Math.round(t*100)/100, timeEnd:null, part:'', fixtures:'', color:'', intensity:'', memo:'', measured:false };
+  const c = { _id: nextId(), time: Math.round(t*100)/100, timeEnd:null, part:'', fixtures:'', color:'', intensity:'', memo:'', measured:false, must:false };
   state.cues.push(c);
   renderTable(); renderMarkers(); showDetail(c._id);
 }
@@ -535,7 +549,7 @@ function renderMarkers(){
   layer.innerHTML = '';
   state.cues.forEach(c => {
     const el = document.createElement('div');
-    el.className = 'cueMarker' + (c._id===state.selectedIdx?' selected':'') + (c.measured?' measured':'');
+    el.className = 'cueMarker' + (c._id===state.selectedIdx?' selected':'') + (c.measured?' measured':'') + (c.must?' must':'');
     el.style.left = (Number(c.time)||0)*state.pxPerSec + 'px';
     el.innerHTML = '<div class="label">'+escapeHtml(c.part||'')+'</div>';
     el.addEventListener('mousedown', (ev) => startDrag(ev, c._id));
@@ -687,7 +701,12 @@ const INTENSITY_MAP = {
   '中（拍で抜く）':0.5,'中（瞬間）':0.6,'高（点滅）':0.8,'高（瞬間）':0.9,
   '小（顔が見える最低限）':0.16,'寒色（わずかに揺らす）':0.5
 };
-const FIXTURE_NAMES = ['SIDE-F','TOP','MH-S','MH-B','PIN','BLD','STR','LZR','HZ','BK','KEY'];
+// 2026-09-24 業者から来た実機セットに合わせて差し替え。
+// 旧（設計都合の呼び方）: SIDE-F / TOP / MH-S / MH-B / PIN / BLD / STR / LZR / HZ / BK / KEY
+// 先方が用意できるのは以下の9種だけ（提出フォーマット Go Beyond_照明案 の列と同じ並び）。
+// ★トップ(上からの絞り可変)・ヘイズ・ストロボ・バックライト は実機セットに無い。
+//   設計上そこが要るキューは、メモに旧指定を残してある。無いものを画面に置かない。
+const FIXTURE_NAMES = ['全灯','暗転','ピンスポット','ムービング','目潰し','SS','レーザー','ミラーボール','ゴボライト','LEDバー'];
 const WARM_MAP = { '暖色':1,'寒色':0,'青':0,'青緑':0,'白':0,'水色':0,'無色':0,'無色（素）':0,'未定':0,'—':0,'':0 };
 buildFixtureCheckboxes();
 buildLaneLabels();
@@ -977,24 +996,27 @@ function renderPreviewGL(){
 
     const fixtures = String(cue.fixtures||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
     const has = (fn) => fixtures.some(f => f.indexOf(fn)===0);
+    const dark = has('暗転');
     uniforms = {
-      topI: has('TOP') ? 0.35+inten*0.55 : 0,
+      // 実機セット→プレビューの割り当て（2026-09-24）。近似。
+      // 暗転が入っていたら全部落とす。全灯は上・横・ビームをまとめて上げる。
+      topI: dark ? 0 : (has('全灯') ? 0.45+inten*0.5 : (has('ムービング') ? 0.3+inten*0.45 : 0)),
       topCos: 0.9975,
-      wingI: has('SIDE-F') ? 0.25+inten*0.5 : 0,
-      pinI: has('PIN') ? 0.5+inten*0.9 : 0,
+      wingI: dark ? 0 : (has('SS') ? 0.25+inten*0.5 : (has('全灯') ? 0.3+inten*0.4 : 0)),
+      pinI: dark ? (has('ピンスポット') ? 0.5+inten*0.9 : 0) : (has('ピンスポット') ? 0.5+inten*0.9 : 0),
       pinX: 0,
-      sideI: has('MH-S') ? 0.2+inten*0.5 : 0,
-      beamI: has('MH-B') ? 0.15+inten*0.5 : 0,
-      blindI: has('BLD') ? 0.3+inten*0.9 : 0,
-      strobeI: has('STR') ? 0.3+inten*0.7 : 0,
-      laserI: has('LZR') ? 0.4+inten*0.6 : 0,
-      backI: has('BK') ? 0.25+inten*0.6 : 0,
-      floorI: 0.16+inten*0.12,
-      haze: 0.012+inten*0.02+(has('HZ')?0.01:0),
+      sideI: dark ? 0 : (has('ムービング') ? 0.2+inten*0.5 : (has('全灯') ? 0.25+inten*0.4 : 0)),
+      beamI: dark ? 0 : (has('ムービング') ? 0.15+inten*0.5 : (has('全灯') ? 0.2+inten*0.4 : 0)),
+      blindI: dark ? 0 : (has('目潰し') ? 0.3+inten*0.9 : 0),
+      strobeI: 0,
+      laserI: dark ? 0 : (has('レーザー') ? 0.4+inten*0.6 : 0),
+      backI: dark ? 0 : (has('LEDバー') ? 0.25+inten*0.6 : 0),
+      floorI: dark ? 0 : 0.16+inten*0.12,
+      haze: 0.012+inten*0.02+(has('ミラーボール')?0.015:0),
       warm: warm,
       sweep: t*0.45 + 0.3*Math.sin(t*0.3),
       lsweep: 0.6*Math.sin(t*1.3),
-      lfan: has('LZR') ? 0.8 : 0.4,
+      lfan: has('レーザー') ? 0.8 : 0.4,
       color: col
     };
     $('previewPart').textContent = cue.part || '(無題)';
