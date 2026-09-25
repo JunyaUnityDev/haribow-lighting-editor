@@ -167,6 +167,7 @@
         グリッド(CSV)<input type="file" id="gridFile" accept=".csv,.json" style="width:110px;">
       </label>
       <span id="gridStatusLabel" style="font-size:12px;color:var(--sub);"></span>
+      <button id="undoBtn" title="取り消し（Cmd/Ctrl+Z）" disabled>↶ 取り消し</button>
       <button id="reloadBtn">再読込</button>
       <button id="saveBtn" class="primary">保存</button>
     </div>
@@ -180,7 +181,7 @@
         <div id="lanesLayer"></div>
       </div>
     </div>
-    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b><b>強度は「中」で固定、「極小→小」で区間のあいだに変化、「極小⇄小/1」で往復＝点滅・うねり（/1は1拍、/8なら1エイト周期）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。</div>
+    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b><b>強度は「中」で固定、「極小→小」で区間のあいだに変化、「極小⇄小/1」で往復＝点滅・うねり（/1は1拍、/8なら1エイト周期）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。<b>間違えたら Cmd（Ctrl）+Z で取り消し、Shift を足すとやり直し。</b></div>
   </div>
 
   <div class="row" id="editArea" style="display:none;">
@@ -289,6 +290,7 @@ async function selectShow(name){
   state.cues = r.cues.map((c,i)=>Object.assign({}, c, {_id:i}));
   state.baseVersion = r.meta ? r.meta.lastUpdated : '';
   state.bpm = (r.meta && Number(r.meta.bpm)) ? Number(r.meta.bpm) : 130;
+  clearHistory();                   // 読み直したら取り消し履歴はリセット
   state.selectedIdx = -1;
   $('waveWrap').style.display = '';
   $('editArea').style.display = '';
@@ -455,6 +457,7 @@ function buildFixtureCheckboxes(){
     cb.addEventListener('change', () => {
       const c = state.cues.find(x=>x._id===state.selectedIdx);
       if (!c) return;
+      pushHistory();
       const checked = Array.from(group.querySelectorAll('input:checked')).map(i=>i.value);
       c.fixtures = checked.join(', ');
       group.querySelectorAll('label').forEach(l => l.classList.toggle('checked', l.querySelector('input').checked));
@@ -473,6 +476,7 @@ function syncFixtureCheckboxes(fixturesStr){
 }
 
 ['f_time','f_timeEnd','f_part','f_color','f_intensity','f_memo'].forEach(id=>{
+  $(id).addEventListener('focus', () => { if (state.selectedIdx>=0) pushHistory(); });
   $(id).addEventListener('input', () => {
     const c = state.cues.find(x=>x._id===state.selectedIdx);
     if (!c) return;
@@ -484,18 +488,59 @@ function syncFixtureCheckboxes(fixturesStr){
   });
 });
 $('f_must').addEventListener('change', () => {
+  pushHistory();
   const c = state.cues.find(x=>x._id===state.selectedIdx);
   if (c) c.must = $('f_must').checked;
   renderTable(); renderMarkers();
 });
 $('f_measured').addEventListener('change', () => {
+  pushHistory();
   const c = state.cues.find(x=>x._id===state.selectedIdx);
   if (c) c.measured = $('f_measured').checked;
   renderTable();
 });
 
+// ---------- 取り消し / やり直し(2026-09-25) ----------
+// キュー全体のスナップショットを積む方式。消したピンも、動かしたピンも、書き換えた中身も戻せる。
+const undoStack = { past: [], future: [], limit: 60 };  // window.history と衝突しない名前にする
+function snapshot(){ return JSON.stringify({ cues: state.cues, sel: state.selectedIdx }); }
+function pushHistory(){
+  undoStack.past.push(snapshot());
+  if (undoStack.past.length > undoStack.limit) undoStack.past.shift();
+  undoStack.future.length = 0;        // 新しく操作したら「やり直し」は捨てる
+  updateUndoBtn();
+}
+function applySnapshot(str){
+  const o = JSON.parse(str);
+  state.cues = o.cues;
+  state.selectedIdx = (o.sel!=null) ? o.sel : -1;
+  renderTable(); renderMarkers(); showDetail(state.selectedIdx);
+}
+function undo(){
+  if (!undoStack.past.length){ setStatus('これ以上戻せません'); return; }
+  undoStack.future.push(snapshot());
+  applySnapshot(undoStack.past.pop());
+  setStatus('取り消しました（あと'+undoStack.past.length+'回戻せます）', 'ok');
+  updateUndoBtn();
+}
+function redo(){
+  if (!undoStack.future.length){ setStatus('やり直せる操作はありません'); return; }
+  undoStack.past.push(snapshot());
+  applySnapshot(undoStack.future.pop());
+  setStatus('やり直しました', 'ok');
+  updateUndoBtn();
+}
+function clearHistory(){ undoStack.past.length = 0; undoStack.future.length = 0; updateUndoBtn(); }
+function updateUndoBtn(){
+  const b = $('undoBtn'); if (!b) return;
+  b.disabled = undoStack.past.length === 0;
+  b.textContent = undoStack.past.length ? ('↶ 取り消し（'+undoStack.past.length+'）') : '↶ 取り消し';
+}
+$('undoBtn').addEventListener('click', undo);
+
 $('deleteCueBtn').addEventListener('click', () => deleteCue(state.selectedIdx));
 function deleteCue(id){
+  pushHistory();
   state.cues = state.cues.filter(c=>c._id!==id);
   if (state.selectedIdx===id) state.selectedIdx = -1;
   renderTable(); renderMarkers(); showDetail(-1);
@@ -505,6 +550,7 @@ $('addCueBtn').addEventListener('click', () => addCueAt(currentPlayTime()));
 
 function nextId(){ return state.cues.length ? Math.max(...state.cues.map(c=>c._id))+1 : 0; }
 function addCueAt(t){
+  pushHistory();
   const c = { _id: nextId(), time: Math.round(t*100)/100, timeEnd:null, part:'', fixtures:'', color:'', intensity:'', memo:'', measured:false, must:false };
   state.cues.push(c);
   renderTable(); renderMarkers(); showDetail(c._id);
@@ -634,6 +680,7 @@ function renderLanes(){
 
 function startDrag(ev, id){
   ev.preventDefault(); ev.stopPropagation();
+  pushHistory();                    // ドラッグ1回ぶんを1手として積む
   const outer = $('timelineScroll');
   function onMove(e){
     const rect = $('wave').getBoundingClientRect();
@@ -754,6 +801,11 @@ document.addEventListener('keydown', (e) => {
   const tag = document.activeElement ? document.activeElement.tagName : '';
   if (tag==='INPUT' || tag==='TEXTAREA') return;
   if (!state.show) return;
+  const mod = e.metaKey || e.ctrlKey;
+  if (mod && (e.key==='z' || e.key==='Z')){
+    e.preventDefault(); if (e.shiftKey) redo(); else undo(); return;
+  }
+  if (mod && (e.key==='y' || e.key==='Y')){ e.preventDefault(); redo(); return; }
   if (e.code==='Space'){
     e.preventDefault(); $('playBtn').click();
   } else if (e.code==='ArrowRight' || e.code==='ArrowLeft'){
