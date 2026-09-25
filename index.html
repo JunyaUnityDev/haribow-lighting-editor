@@ -44,6 +44,14 @@
   #timelineScroll{position:relative;overflow-x:auto;flex:1;}
   canvas#wave{display:block;background:#0b0d12;cursor:crosshair;}
   #cueLayer{position:absolute;top:0;left:0;height:140px;pointer-events:none;}
+  /* 再生ヘッド(2026-09-25)。棒そのものを掴める＋目盛り帯のどこでも掴める */
+  #playhead{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;z-index:6;
+    background:#6effa0;box-shadow:0 0 7px rgba(110,255,160,.55);pointer-events:none;display:none;}
+  #playhead .grip{position:absolute;top:0;left:-6px;width:14px;height:14px;background:#6effa0;
+    border-radius:2px 2px 6px 6px;cursor:ew-resize;pointer-events:auto;}
+  #playhead.dragging{background:#b6ffd4;box-shadow:0 0 12px rgba(110,255,160,.9);}
+  /* 目盛り帯(canvas上端16px)はシーク用。ここはキュー追加にしない */
+  canvas#wave.seekzone{cursor:ew-resize;}
   #lanesLayer{position:relative;}
   .laneRow{height:18px;position:relative;border-top:1px solid #1c202a;background:#0d0f14;}
   .laneBar{position:absolute;top:2px;height:14px;border-radius:3px;opacity:0.85;}
@@ -148,10 +156,12 @@
       <div id="timelineScroll">
         <canvas id="wave" height="140"></canvas>
         <div id="cueLayer"></div>
+        <!-- 再生ヘッド(2026-09-25)。目盛り帯のどこでもドラッグで移動できる -->
+        <div id="playhead"><div class="grip"></div></div>
         <div id="lanesLayer"></div>
       </div>
     </div>
-    <div id="hint">タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。</div>
+    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。</div>
   </div>
 
   <div class="row" id="editArea" style="display:none;">
@@ -624,8 +634,57 @@ function startDrag(ev, id){
   document.addEventListener('mouseup', onUp);
 }
 
+// ---------- 再生ヘッド(2026-09-25) ----------
+// 目盛り帯 = canvas上端の RULER_H px。ここはシーク専用にして、キュー追加と取り合わない。
+const RULER_H = 16;
+function renderPlayhead(){
+  const ph = $('playhead');
+  if (!state.show){ ph.style.display='none'; return; }
+  ph.style.display = '';
+  ph.style.left = (currentPlayTime()*state.pxPerSec) + 'px';
+}
+function timeFromClientX(clientX){
+  const rect = $('wave').getBoundingClientRect();
+  const x = clientX - rect.left;
+  return Math.max(0, Math.min(state.duration||Infinity, x / state.pxPerSec));
+}
+// ヘッドを掴む / 目盛り帯を掴む → どちらも同じドラッグ処理
+function startSeekDrag(ev){
+  ev.preventDefault(); ev.stopPropagation();
+  const ph = $('playhead');
+  const wasPlaying = state.isPlaying;
+  if (wasPlaying) $('playBtn').click();          // ドラッグ中は止める(音がずれるため)
+  ph.classList.add('dragging');
+  const apply = (e) => {
+    state.playOffset = timeFromClientX(e.clientX);
+    renderPlayhead();
+    $('timeLabel').textContent = fmtTime(state.playOffset) + ' / ' + fmtTime(state.duration);
+  };
+  apply(ev);
+  function onMove(e){ apply(e); }
+  function onUp(e){
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+    ph.classList.remove('dragging');
+    seekTo(timeFromClientX(e.clientX));
+    if (wasPlaying) $('playBtn').click();         // 離した位置から再開
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+}
+$('playhead').querySelector('.grip').addEventListener('mousedown', startSeekDrag);
+
+$('wave').addEventListener('mousemove', (e) => {
+  const rect = $('wave').getBoundingClientRect();
+  $('wave').classList.toggle('seekzone', (e.clientY - rect.top) < RULER_H);
+});
+$('wave').addEventListener('mousedown', (e) => {
+  const rect = $('wave').getBoundingClientRect();
+  if ((e.clientY - rect.top) < RULER_H) startSeekDrag(e);   // 目盛り帯はシーク
+});
 $('wave').addEventListener('click', (e) => {
   const rect = $('wave').getBoundingClientRect();
+  if ((e.clientY - rect.top) < RULER_H) return;             // 目盛り帯ではキューを足さない
   const x = e.clientX - rect.left;
   let t = x / state.pxPerSec;
   t = snapTime(t, e.shiftKey);
@@ -1077,6 +1136,7 @@ function renderPreviewGL(){
 
 function previewLoop(){
   renderPreviewGL();
+  renderPlayhead();
   if (state.audioBuffer){
     $('timeLabel').textContent = fmtTime(currentPlayTime()) + ' / ' + fmtTime(state.duration);
   }
