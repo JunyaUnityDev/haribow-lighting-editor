@@ -75,10 +75,23 @@
 
   #previewWrap{background:#000;border:1px solid var(--line);border-radius:8px;padding:0;margin-bottom:10px;overflow:hidden;position:relative;}
   canvas#preview{display:block;width:100%;height:180px;}
-  #previewInfo{position:absolute;left:10px;bottom:8px;font-size:12px;color:#cfd6e6;text-shadow:0 1px 3px #000;}
-  #previewInfo .part{font-weight:600;color:#fff;}
-  #previewInfo .fixtures{margin-top:2px;}
-  #previewInfo .fx{display:inline-block;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:4px;padding:1px 6px;margin-right:4px;font-size:10.5px;}
+  /* プレビューの見出し(2026-09-25)。今どのキューで何が起きているかを読めるようにする */
+  #previewTop{position:absolute;left:12px;top:10px;right:12px;display:flex;align-items:baseline;gap:8px;
+    font-size:13px;color:#cfd6e6;text-shadow:0 1px 4px #000;pointer-events:none;}
+  #previewTop .part{font-size:16px;font-weight:600;color:#fff;letter-spacing:.01em;}
+  #previewTime{font-variant-numeric:tabular-nums;color:#6effa0;font-size:13px;}
+  #previewMust{display:none;background:#ff7f7f;color:#2a0d0d;font-size:10px;font-weight:700;
+    border-radius:3px;padding:1px 6px;letter-spacing:.04em;}
+  #previewMust.on{display:inline-block;}
+  #previewInfo{position:absolute;left:12px;bottom:9px;right:12px;font-size:12px;color:#cfd6e6;
+    text-shadow:0 1px 3px #000;pointer-events:none;}
+  #previewInfo .fx{display:inline-block;border-radius:4px;padding:1px 7px;margin:0 4px 3px 0;
+    font-size:11px;font-weight:600;color:#0c0f14;}
+  #previewInfo .fx.off{background:none;border:1px solid rgba(255,255,255,.22);color:#8a93a6;font-weight:400;}
+  #previewInfo .meta{margin-top:1px;font-size:11.5px;color:#aab3c4;}
+  #previewInfo .meta b{color:#e6ebf5;font-weight:600;}
+  #previewInfo .memo{margin-top:3px;font-size:11px;color:#8a93a6;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 
   .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;}
   #detailPanel{width:320px;flex:none;}
@@ -133,9 +146,15 @@
   <div id="waveWrap" style="display:none;">
     <div id="previewWrap">
       <canvas id="preview"></canvas>
+      <div id="previewTop">
+        <span id="previewMust">外せない</span>
+        <span id="previewTime">0:00.00</span>
+        <span class="part" id="previewPart">—</span>
+      </div>
       <div id="previewInfo">
-        <div class="part" id="previewPart">—</div>
         <div class="fixtures" id="previewFixtures"></div>
+        <div class="meta" id="previewMeta"></div>
+        <div class="memo" id="previewMemo"></div>
       </div>
     </div>
     <div id="waveToolbar">
@@ -821,6 +840,7 @@ precision highp float;
 out vec4 outColor;
 uniform vec2 uResolution;
 uniform float uTopI, uTopCos, uWingI, uPinI, uPinX, uSideI, uBeamI, uBlindI, uStrobeI, uLaserI, uBackI, uFloorI, uHaze, uWarm, uSweep, uLSweep, uLFan, uTime;
+uniform float uTopN;   // 上からの光を何灯使うか。1=中央1本だけ / 5=全員
 uniform vec3 uColor;
 
 const float PZ = 5.2;
@@ -836,6 +856,8 @@ const vec3 lc = vec3(0.20,0.90,0.75);
 float px5(int k){
   if (k==0) return -4.2; if (k==1) return -1.3; if (k==2) return 0.0; if (k==3) return 1.3; return 4.2;
 }
+// 上からの光のマスク。1灯のときは中央(k==2)だけ点ける
+float tmask(int k){ return (uTopN > 1.5) ? 1.0 : ((k==2) ? 1.0 : 0.0); }
 
 float cone(vec3 P, vec3 apex, vec3 d, float cosH, float L, float soft){
   vec3 v = P - apex; float dist = length(v)+1e-6; float al = dot(v/dist, d); float r = 0.0;
@@ -864,7 +886,7 @@ void main(){
     air += hc * uHaze * hz * dt * 0.55;
     for (int k=0;k<5;k++){
       vec3 apex = vec3(px5(k), 9.2, PZ);
-      air += topC * cone(P, apex, vec3(0.0,-1.0,0.0), uTopCos, 11.0, 1.4) * uTopI * hz * dt * 5.0;
+      air += topC * cone(P, apex, vec3(0.0,-1.0,0.0), uTopCos, 11.0, 1.4) * uTopI * tmask(k) * hz * dt * 5.0;
     }
     for (int side=0; side<2; side++){
       float sgnx = 1.0 - 2.0*float(side);
@@ -917,7 +939,7 @@ void main(){
         float fl = uFloorI*0.30;
         for (int k=0;k<5;k++){
           float d2 = (Pf.x-px5(k))*(Pf.x-px5(k)) + (Pf.z-PZ)*(Pf.z-PZ);
-          fl += uTopI * exp(-d2/2.4) * 1.25;
+          fl += uTopI * tmask(k) * exp(-d2/2.4) * 1.25;
         }
         fl += uWingI*0.30*exp(-((Pf.z-PZ)*(Pf.z-PZ))/14.0);
         fl += uSideI*0.20*exp(-((Pf.z-PZ)*(Pf.z-PZ))/20.0);
@@ -925,6 +947,13 @@ void main(){
         fl += uPinI*0.55*exp(-(((Pf.x-uPinX)*(Pf.x-uPinX)+(Pf.z-PZ)*(Pf.z-PZ)))/1.3);
         vec3 fc = mix(floorC, warmC*0.55, uWarm);
         bg += fc * fl * exp(-max(0.0,Pf.z)/15.0);
+        // 舞台のふち＋立ち位置の目印（確認用。暗転でも空間と人の位置が分かるように極薄く）
+        float edge = smoothstep(0.07,0.0,abs(abs(Pf.x)-8.6)) + smoothstep(0.07,0.0,abs(Pf.z-11.2));
+        bg += vec3(0.13,0.17,0.24) * edge;
+        for (int k=0;k<5;k++){
+          float md = (Pf.x-px5(k))*(Pf.x-px5(k)) + (Pf.z-PZ)*(Pf.z-PZ);
+          bg += vec3(0.10,0.13,0.19) * smoothstep(0.30,0.0,md);
+        }
       }
     }
   }
@@ -943,7 +972,7 @@ void main(){
         float lat = min(1.0, dx*dx);
         float pn = exp(-((px5(k)-uPinX)*(px5(k)-uPinX))/0.30);
         bg += backC * uBackI * rim * 1.6;
-        bg += topC * uTopI * inside * top * 1.9;
+        bg += topC * uTopI * tmask(k) * inside * top * 1.9;
         bg += wingC * uWingI * inside * (0.20+0.80*lat) * 1.7;
         bg += pinC * uPinI * pn * inside * 1.5;
       }
@@ -1042,7 +1071,7 @@ function renderPreviewGL(){
 
   const t = currentPlayTime();
   const seg = state.show ? activeSegmentAt(t) : null;
-  let uniforms = { topI:0, topCos:0.9975, wingI:0, pinI:0, pinX:0, sideI:0, beamI:0, blindI:0, strobeI:0, laserI:0, backI:0, floorI:0, haze:0.012, warm:0, sweep:t*0.45, lsweep:0.6*Math.sin(t*1.3), lfan:0.6, color:[0.5,0.6,0.7] };
+  let uniforms = { topI:0, topN:1, topCos:0.9975, wingI:0, pinI:0, pinX:0, sideI:0, beamI:0, blindI:0, strobeI:0, laserI:0, backI:0, floorI:0, haze:0.012, warm:0, sweep:t*0.45, lsweep:0.6*Math.sin(t*1.3), lfan:0.6, color:[0.5,0.6,0.7] };
 
   if (seg){
     const cue = seg.cue, p = seg.progress;
@@ -1061,6 +1090,8 @@ function renderPreviewGL(){
       // 暗転が入っていたら全部落とす。全灯は上・横・ビームをまとめて上げる。
       topI: dark ? 0 : (has('全灯') ? 0.45+inten*0.5 : (has('ムービング') ? 0.3+inten*0.45 : 0)),
       topCos: 0.9975,
+      // ★上からの光は既定で1灯。舞台全体を起こすのは「全灯」のときだけ
+      topN: has('全灯') ? 5 : 1,
       wingI: dark ? 0 : (has('SS') ? 0.25+inten*0.5 : (has('全灯') ? 0.3+inten*0.4 : 0)),
       pinI: dark ? (has('ピンスポット') ? 0.5+inten*0.9 : 0) : (has('ピンスポット') ? 0.5+inten*0.9 : 0),
       pinX: 0,
@@ -1079,10 +1110,29 @@ function renderPreviewGL(){
       color: col
     };
     $('previewPart').textContent = cue.part || '(無題)';
+    $('previewTime').textContent = fmtTime(Number(cue.time)||0);
+    $('previewMust').classList.toggle('on', !!cue.must);
     const activeNames = FIXTURE_NAMES.filter(fn => fixtures.some(f => f.indexOf(fn)===0));
-    $('previewFixtures').innerHTML = activeNames.map(n=>`<span class="fx">${n}</span>`).join('') || '<span class="fx">灯体なし</span>';
+    // 灯体チップはレーンと同じ色にして、どれが生きているか一目で分かるようにする
+    $('previewFixtures').innerHTML = activeNames.length
+      ? activeNames.map(n=>{
+          const i = FIXTURE_NAMES.indexOf(n);
+          return `<span class="fx" style="background:${LANE_COLORS[i % LANE_COLORS.length]}">${n}</span>`;
+        }).join('')
+      : '<span class="fx off">灯体なし</span>';
+    const parts = [];
+    if (cue.color) parts.push('色 <b>'+escapeHtml(String(cue.color))+'</b>');
+    if (cue.intensity) parts.push('強度 <b>'+escapeHtml(String(cue.intensity))+'</b>');
+    if (has('全灯')) parts.push('上からの光 <b>全員</b>');
+    else if (uniforms.topI>0) parts.push('上からの光 <b>1本</b>');
+    const remain = seg.end - t;
+    if (isFinite(remain) && remain>0) parts.push('次まで <b>'+remain.toFixed(1)+'秒</b>');
+    $('previewMeta').innerHTML = parts.join('　');
+    $('previewMemo').textContent = cue.memo ? String(cue.memo) : '';
   } else {
-    $('previewPart').textContent = '—'; $('previewFixtures').innerHTML = '';
+    $('previewPart').textContent = '—'; $('previewTime').textContent = '';
+    $('previewMust').classList.remove('on');
+    $('previewFixtures').innerHTML = ''; $('previewMeta').innerHTML = ''; $('previewMemo').textContent = '';
   }
 
   gl.bindVertexArray(vao);
@@ -1094,6 +1144,7 @@ function renderPreviewGL(){
   gl.uniform2f(u(gl,sceneProg,'uResolution'), w, h);
   gl.uniform1f(u(gl,sceneProg,'uTopI'), uniforms.topI);
   gl.uniform1f(u(gl,sceneProg,'uTopCos'), uniforms.topCos);
+  gl.uniform1f(u(gl,sceneProg,'uTopN'), uniforms.topN);
   gl.uniform1f(u(gl,sceneProg,'uWingI'), uniforms.wingI);
   gl.uniform1f(u(gl,sceneProg,'uPinI'), uniforms.pinI);
   gl.uniform1f(u(gl,sceneProg,'uPinX'), uniforms.pinX);
