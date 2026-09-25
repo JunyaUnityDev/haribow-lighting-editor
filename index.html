@@ -640,7 +640,7 @@ const RULER_H = 16;
 function renderPlayhead(){
   const ph = $('playhead');
   if (!state.show){ ph.style.display='none'; return; }
-  ph.style.display = '';
+  ph.style.display = 'block';   // CSSで display:none にしてあるので '' では戻らない
   ph.style.left = (currentPlayTime()*state.pxPerSec) + 'px';
 }
 function timeFromClientX(clientX){
