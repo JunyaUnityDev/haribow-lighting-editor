@@ -180,7 +180,7 @@
         <div id="lanesLayer"></div>
       </div>
     </div>
-    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。</div>
+    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b><b>強度は「中」で固定、「極小→小」で区間のあいだに変化、「極小⇄小/1」で往復＝点滅・うねり（/1は1拍、/8なら1エイト周期）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。</div>
   </div>
 
   <div class="row" id="editArea" style="display:none;">
@@ -288,6 +288,7 @@ async function selectShow(name){
   state.show = name;
   state.cues = r.cues.map((c,i)=>Object.assign({}, c, {_id:i}));
   state.baseVersion = r.meta ? r.meta.lastUpdated : '';
+  state.bpm = (r.meta && Number(r.meta.bpm)) ? Number(r.meta.bpm) : 130;
   state.selectedIdx = -1;
   $('waveWrap').style.display = '';
   $('editArea').style.display = '';
@@ -775,7 +776,7 @@ const COLOR_MAP = {
   '無色':'#fff2df','無色（素）':'#fff2df','未定':'#8a8f9a','—':'#000000','': '#8a8f9a'
 };
 const INTENSITY_MAP = {
-  '0':0,'極小':0.08,'小':0.22,'中':0.5,'高':0.78,'最大':1.0,'垂れる':0.28,
+  '0':0,'極小':0.08,'小':0.22,'中':0.5,'大':0.85,'高':0.78,'最大':1.0,'垂れる':0.28,
   '中（拍で抜く）':0.5,'中（瞬間）':0.6,'高（点滅）':0.8,'高（瞬間）':0.9,
   '小（顔が見える最低限）':0.16,'寒色（わずかに揺らす）':0.5
 };
@@ -809,6 +810,31 @@ function hexToRgb(hex){
   return [(n>>16)&255,(n>>8)&255,n&255];
 }
 function lerp(a,b,t){ return a+(b-a)*t; }
+
+// 強度の書き方(2026-09-25)
+//   「中」        … 固定
+//   「極小→小」   … 区間のあいだに 極小 から 小 へ変化する
+//   「極小⇄小/1」 … 極小と小を往復しつづける（点滅・うねり）。/1 は周期＝1拍、/8 なら1エイト
+// 拍は演目のBPM（既定130）に同期する。周期が短いほど鋭く、長いほど滑らかに振る。
+function resolveIntensityAt(raw, progress, t, fallback){
+  raw = (raw===undefined||raw===null) ? '' : String(raw).trim();
+  const bpm = Number(state.bpm) || 130;
+  const beat = 60 / bpm;
+  const m = raw.match(/^(.+?)\s*[⇄↔]\s*(.+?)\s*(?:\/\s*([\d.]+))?$/);
+  if (m){
+    const a = INTENSITY_MAP[m[1].trim()], b = INTENSITY_MAP[m[2].trim()];
+    if (a!==undefined && b!==undefined){
+      const beats = parseFloat(m[3]) || 1;
+      const period = beats * beat;
+      const ph = ((t % period) + period) % period / period;
+      const w = 0.5 - 0.5*Math.cos(2*Math.PI*ph);      // 0→1→0 の往復
+      const sharp = beats <= 1.5 ? 2.4 : (beats <= 4 ? 1.5 : 1.0);  // 速い明滅ほど鋭く
+      return a + (b-a)*Math.pow(w, sharp);
+    }
+  }
+  const [i1,i2] = resolveToken(INTENSITY_MAP, raw, fallback);
+  return lerp(i1, i2, progress);
+}
 function lerpColor(c1,c2,t){
   const a=hexToRgb(c1), b=hexToRgb(c2);
   return `rgb(${Math.round(lerp(a[0],b[0],t))},${Math.round(lerp(a[1],b[1],t))},${Math.round(lerp(a[2],b[2],t))})`;
@@ -825,7 +851,7 @@ function activeSegmentAt(t){
     : (sorted[idx+1] ? Number(sorted[idx+1].time) : state.duration);
   const segStart = Number(cur.time)||0;
   const progress = segEnd > segStart ? Math.min(1, Math.max(0, (t-segStart)/(segEnd-segStart))) : 0;
-  return { cue: cur, progress };
+  return { cue: cur, progress, start: segStart, end: segEnd };
 }
 
 // ---------- WebGLライトプレビュー(Taichi previzのcone/haze/floor/演者ロジックを移植) ----------
@@ -1077,8 +1103,7 @@ function renderPreviewGL(){
     const cue = seg.cue, p = seg.progress;
     const [c1,c2] = resolveToken(COLOR_MAP, cue.color, '#8a8f9a');
     const col = hexToRgb(lerpColor(c1,c2,p)).map(v=>v/255);
-    const [i1,i2] = resolveToken(INTENSITY_MAP, cue.intensity, 0.4);
-    const inten = lerp(Number(i1)||0, Number(i2)||0, p);
+    const inten = resolveIntensityAt(cue.intensity, p, t, 0.4);
     const [w1,w2] = resolveToken(WARM_MAP, cue.color, 0);
     const warm = lerp(w1,w2,p);
 
@@ -1089,7 +1114,8 @@ function renderPreviewGL(){
       // 実機セット→プレビューの割り当て（2026-09-24）。近似。
       // 暗転が入っていたら全部落とす。全灯は上・横・ビームをまとめて上げる。
       topI: dark ? 0 : (has('全灯') ? 0.45+inten*0.5 : (has('ムービング') ? 0.3+inten*0.45 : 0)),
-      topCos: 0.9975,
+      // ★径が強度で変わる。細い=針のように / 大きい=通常のプール（「さす大きく/小さく」はこれ）
+      topCos: lerp(0.99915, 0.99520, Math.min(1, inten*1.15)),
       // ★上からの光は既定で1灯。舞台全体を起こすのは「全灯」のときだけ
       topN: has('全灯') ? 5 : 1,
       wingI: dark ? 0 : (has('SS') ? 0.25+inten*0.5 : (has('全灯') ? 0.3+inten*0.4 : 0)),
