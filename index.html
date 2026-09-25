@@ -55,6 +55,10 @@
   #lanesLayer{position:relative;}
   .laneRow{height:18px;position:relative;border-top:1px solid #1c202a;background:#0d0f14;}
   .laneBar{position:absolute;top:2px;height:14px;border-radius:3px;opacity:0.85;}
+  /* 掴み代(2026-09-26)。線が2pxだと掴めないので、見た目はそのままで当たり判定を広げる */
+  .cueMarker::before{content:'';position:absolute;left:-6px;top:0;width:14px;height:100%;cursor:ew-resize;}
+  .cueMarker.dragging{background:#fff;width:3px;z-index:7;}
+  button.armed{background:#ff7f7f;color:#2a0d0d;font-weight:700;}
   .cueMarker{
     position:absolute;top:0;width:2px;height:100%;background:var(--accent2);
     pointer-events:auto;cursor:ew-resize;
@@ -181,7 +185,7 @@
         <div id="lanesLayer"></div>
       </div>
     </div>
-    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b><b>強度は「中」で固定、「極小→小」で区間のあいだに変化、「極小⇄小/1」で往復＝点滅・うねり（/1は1拍、/8なら1エイト周期）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。<b>間違えたら Cmd（Ctrl）+Z で取り消し、Shift を足すとやり直し。</b></div>
+    <div id="hint"><b>上の目盛りの帯をドラッグすると再生位置が動きます（緑の棒も直接つかめます）。</b><b>強度は「中」で固定、「極小→小」で区間のあいだに変化、「極小⇄小/1」で往復＝点滅・うねり（/1は1拍、/8なら1エイト周期）。</b>タイムライン上をクリックでその時刻にキュー追加／既存のマーカーはドラッグで移動（グリッド読込済みなら自動でカウントに吸着、Shift押しながらで解除）。音源ファイルはローカルのものを選択するだけで、サーバーには送信されません（波形表示・再生用のみ）。一度選ぶとこのブラウザに記憶され、次回この演目を開いた時は自動で読み込まれます。矢印キーで前後のキューへ移動、Deleteで選択中のキューを削除、スペースで再生/停止。<b>間違えたら Cmd（Ctrl）+Z で取り消し、Shift を足すとやり直し。Cmd（Ctrl）+D でキューを複製。Zを押しながら波形をクリックすると、そこへ再生位置が飛びます。×は2回押すと消えます。</b></div>
   </div>
 
   <div class="row" id="editArea" style="display:none;">
@@ -215,6 +219,7 @@
         <div class="field"><label>メモ</label><textarea id="f_memo"></textarea></div>
         <div class="field"><label><input type="checkbox" id="f_measured" style="width:auto;"> JUNYA実測</label></div>
         <div class="field"><label class="mustLabel"><input type="checkbox" id="f_must" style="width:auto;"> <b>外せない演出</b>（ここは業者に必ず守ってもらう。外したものは「お任せ」扱い）</label></div>
+        <button id="dupCueBtn">このキューを複製（Cmd/Ctrl+D）</button>
         <button id="deleteCueBtn" class="danger">このキューを削除</button>
       </div>
     </div>
@@ -426,8 +431,15 @@ function renderTable(){
     tr.addEventListener('click', (e) => { if (e.target.dataset.del===undefined || e.target.dataset.del==='') showDetail(c._id); });
     body.appendChild(tr);
   });
+  // 押した瞬間に消えると事故るので2段階。1回目で「消す？」に変わり、2回目で消える（2.5秒で戻る）
   body.querySelectorAll('button[data-del]').forEach(btn=>{
-    btn.addEventListener('click', (e)=>{ e.stopPropagation(); deleteCue(Number(btn.dataset.del)); });
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      if (btn.dataset.armed === '1'){ deleteCue(Number(btn.dataset.del)); return; }
+      body.querySelectorAll('button[data-del]').forEach(b=>{ b.dataset.armed=''; b.textContent='×'; b.classList.remove('armed'); });
+      btn.dataset.armed = '1'; btn.textContent = '消す？'; btn.classList.add('armed');
+      setTimeout(()=>{ if (btn.isConnected && btn.dataset.armed==='1'){ btn.dataset.armed=''; btn.textContent='×'; btn.classList.remove('armed'); } }, 2500);
+    });
   });
   $('cueCount').textContent = state.cues.length;
 }
@@ -537,6 +549,20 @@ function updateUndoBtn(){
   b.textContent = undoStack.past.length ? ('↶ 取り消し（'+undoStack.past.length+'）') : '↶ 取り消し';
 }
 $('undoBtn').addEventListener('click', undo);
+
+function duplicateCue(id){
+  const c = state.cues.find(x=>x._id===id);
+  if (!c) return;
+  pushHistory();
+  const n = JSON.parse(JSON.stringify(c));
+  n._id = nextId();
+  n.time = Math.round((Number(c.time)+0.5)*100)/100;   // 0.5秒うしろに置く。重ならないように
+  n.timeEnd = null;
+  state.cues.push(n);
+  renderTable(); renderMarkers(); showDetail(n._id);
+  setStatus('複製しました（'+fmtTime(n.time)+'）。ドラッグで位置を合わせてください', 'ok');
+}
+$('dupCueBtn').addEventListener('click', () => { if (state.selectedIdx>=0) duplicateCue(state.selectedIdx); });
 
 $('deleteCueBtn').addEventListener('click', () => deleteCue(state.selectedIdx));
 function deleteCue(id){
@@ -682,6 +708,8 @@ function startDrag(ev, id){
   ev.preventDefault(); ev.stopPropagation();
   pushHistory();                    // ドラッグ1回ぶんを1手として積む
   const outer = $('timelineScroll');
+  const el = ev.currentTarget && ev.currentTarget.classList ? ev.currentTarget : null;
+  if (el) el.classList.add('dragging');
   function onMove(e){
     const rect = $('wave').getBoundingClientRect();
     const x = e.clientX - rect.left + outer.scrollLeft;
@@ -695,6 +723,9 @@ function startDrag(ev, id){
   function onUp(){
     document.removeEventListener('mousemove', onMove);
     document.removeEventListener('mouseup', onUp);
+    if (el) el.classList.remove('dragging');
+    const c = state.cues.find(c=>c._id===id);
+    if (c) setStatus('移動しました → '+fmtTime(c.time)+'（Cmd/Ctrl+Zで戻せます）', 'ok');
     renderTable();
   }
   document.addEventListener('mousemove', onMove);
@@ -704,6 +735,18 @@ function startDrag(ev, id){
 // ---------- 再生ヘッド(2026-09-25) ----------
 // 目盛り帯 = canvas上端の RULER_H px。ここはシーク専用にして、キュー追加と取り合わない。
 const RULER_H = 16;
+// Zを押しているあいだは、波形のどこをクリックしても再生位置が動く（キューは足さない）
+let zHeld = false;
+document.addEventListener('keydown', (e) => {
+  if ((e.key==='z'||e.key==='Z') && !e.metaKey && !e.ctrlKey){
+    const tag = document.activeElement ? document.activeElement.tagName : '';
+    if (tag!=='INPUT' && tag!=='TEXTAREA'){ zHeld = true; $('wave').classList.add('seekzone'); }
+  }
+});
+document.addEventListener('keyup', (e) => {
+  if (e.key==='z'||e.key==='Z'){ zHeld = false; $('wave').classList.remove('seekzone'); }
+});
+window.addEventListener('blur', () => { zHeld = false; });
 function renderPlayhead(){
   const ph = $('playhead');
   if (!state.show){ ph.style.display='none'; return; }
@@ -743,14 +786,15 @@ $('playhead').querySelector('.grip').addEventListener('mousedown', startSeekDrag
 
 $('wave').addEventListener('mousemove', (e) => {
   const rect = $('wave').getBoundingClientRect();
-  $('wave').classList.toggle('seekzone', (e.clientY - rect.top) < RULER_H);
+  $('wave').classList.toggle('seekzone', zHeld || (e.clientY - rect.top) < RULER_H);
 });
 $('wave').addEventListener('mousedown', (e) => {
   const rect = $('wave').getBoundingClientRect();
-  if ((e.clientY - rect.top) < RULER_H) startSeekDrag(e);   // 目盛り帯はシーク
+  if (zHeld || (e.clientY - rect.top) < RULER_H) startSeekDrag(e);   // Z押下中と目盛り帯はシーク
 });
 $('wave').addEventListener('click', (e) => {
   const rect = $('wave').getBoundingClientRect();
+  if (zHeld) return;                                        // Zを押している間はキューを足さない
   if ((e.clientY - rect.top) < RULER_H) return;             // 目盛り帯ではキューを足さない
   const x = e.clientX - rect.left;
   let t = x / state.pxPerSec;
@@ -806,6 +850,7 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault(); if (e.shiftKey) redo(); else undo(); return;
   }
   if (mod && (e.key==='y' || e.key==='Y')){ e.preventDefault(); redo(); return; }
+  if (mod && (e.key==='d' || e.key==='D')){ e.preventDefault(); if (state.selectedIdx>=0) duplicateCue(state.selectedIdx); return; }
   if (e.code==='Space'){
     e.preventDefault(); $('playBtn').click();
   } else if (e.code==='ArrowRight' || e.code==='ArrowLeft'){
